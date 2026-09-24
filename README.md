@@ -60,6 +60,25 @@ python outlook.py --csv data/SPY.csv --walk-forward 2 --wf-start 2000
 Options: `--horizon` (N, default 21), `--threshold`, `--cost-bps`,
 `--test-frac` and `--epochs`.
 
+**Variations** (all off by default):
+
+- `--band 0.2` trades less. It switches into an asset only when the score
+  rises above +0.2 and out only when it falls below −0.2. In between it
+  keeps the current position, which avoids flipping in and out around zero.
+- `--trend-features` adds the 200-day moving-average gap and the 12-month
+  return to the model's inputs as raw values. The existing streams are
+  z-scored within each 200-day window, which hides whether the price is
+  above or below its long-run trend.
+- `--top 3 --rebalance 21` (portfolio mode) holds the 3 highest-scoring
+  assets and re-picks them every 21 trading days, instead of holding every
+  asset with a positive score. The baseline rules are ranked the same way,
+  so the comparison stays fair.
+
+```bash
+python outlook.py --tickers XEG.TO XFN.TO XIT.TO XRE.TO --benchmark XIU.TO \
+  --start 2001-01-01 --walk-forward 2 --wf-start 2008 --band 0.2
+```
+
 Regime labels come from a centred 126-day return (±10%). They look ahead
 on purpose: they are only used to group results for evaluation, never as
 an input to the model.
