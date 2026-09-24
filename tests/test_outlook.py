@@ -78,3 +78,40 @@ def test_portfolio_weights():
     rets, w = ol.portfolio_backtest(prices, sig, cost_bps=0)
     assert np.allclose(w.iloc[0], 0.5) and w.iloc[1].sum() == 0
     assert np.isclose(rets["strategy"].iloc[0], 0.0)    # +10% and -10%
+
+
+def test_walk_folds_cover_years_without_leakage():
+    dates = pd.bdate_range("1995-01-01", "2006-06-30")
+    N = 21
+    folds = ol.walk_folds(dates, N, first_year=2000, step=2)
+    assert [dates[te[0]].year for _, _, te in folds] == [2000, 2002, 2004, 2006]
+    for tr, va, te in folds:
+        assert tr[-1] + N < va[0] and va[-1] + N < te[0]
+    covered = np.concatenate([te for _, _, te in folds])
+    assert np.array_equal(covered, np.where(dates.year >= 2000)[0])
+
+
+def test_label_fit_accepts_per_row_scale():
+    y = np.array([0.02, -0.01, np.nan, 0.04])
+    scale = np.array([0.02, 0.02, 0.04, 0.04])
+    mae, hit = ol.label_fit(np.array([1.0, -0.5, 0.0, 1.0]), y, scale)
+    assert np.isclose(mae, 0) and hit == 1
+
+
+def test_baselines_use_only_past_prices():
+    p = ol.synthetic_prices(2, 800)
+    b1 = ol.baseline_signals(p)
+    p2 = p.copy()
+    p2.iloc[-100:] *= 0.5                               # change the future
+    b2 = ol.baseline_signals(p2)
+    cut = p.index[-100]
+    for k in b1:
+        a, b = b1[k][b1[k].index < cut], b2[k][b2[k].index < cut]
+        pd.testing.assert_series_equal(a, b)
+
+
+def test_ma_baseline_sign():
+    up = series(np.linspace(100, 200, 300))
+    down = series(np.linspace(200, 100, 300))
+    assert (ol.baseline_signals(up)["200-day MA"].dropna() > 0).all()
+    assert (ol.baseline_signals(down)["12-month momentum"].dropna() < 0).all()

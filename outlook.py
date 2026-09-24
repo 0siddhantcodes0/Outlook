@@ -7,8 +7,10 @@ Implements the writeup end to end:
      day windows, 200 days of history each (1,200 inputs)
   3. Model: residual MLP, tanh output, MAE loss, Adam 1e-3, 30 epochs
   4. Backtest: long when the signal is above a threshold, flat otherwise,
-     compared with buy and hold on an out-of-sample test period, overall
-     and split by market regime (bull / sideways / bear)
+     on an out-of-sample test period (one split, or walk-forward: retrain
+     every few years, test on the years after). Compared with buy and hold
+     and two classic rules run the same way (200-day moving average,
+     12-month momentum), overall and by market regime (bull/sideways/bear)
   5. Portfolio: one model trained on a pool of assets, capital spread
      equally over assets with a positive Outlook, compared with an
      equal-weight basket and an optional cap-weighted benchmark ticker
@@ -22,6 +24,7 @@ Run:
   python outlook.py --synthetic               # offline smoke test
   python outlook.py --tickers AAPL MSFT JPM XOM --benchmark SPY
   python outlook.py --synthetic --n-assets 5   # offline portfolio test
+  python outlook.py --csv data/SPY.csv --walk-forward 2 --wf-start 2000
 """
 
 import argparse
@@ -168,6 +171,21 @@ def chrono_split(n, N, test_frac, val_frac=0.15):
     return tr, va, te
 
 
+def walk_folds(dates, N, first_year, step, val_frac=0.15):
+    """Walk-forward folds: test on `step` calendar years at a time from
+    `first_year`, training on everything before (minus an N-row gap) with
+    the last `val_frac` of that history held out for validation."""
+    folds = []
+    for year in range(first_year, dates[-1].year + 1, step):
+        te = np.where((dates.year >= year) & (dates.year < year + step))[0]
+        if len(te) == 0:
+            continue
+        hist = np.arange(0, te[0] - N)
+        cut = int(len(hist) * (1 - val_frac))
+        folds.append((hist[:cut - N], hist[cut:], te))
+    return folds
+
+
 def train_outlook(X_tr, y_tr, X_va, y_va, epochs, verbose=2):
     """Fit on the target scaled by its train 95th percentile and clipped
     into the tanh range. Returns (model, scale)."""
@@ -183,10 +201,34 @@ def train_outlook(X_tr, y_tr, X_va, y_va, epochs, verbose=2):
     return model, scale
 
 
+def fit_predict(parts, folds, epochs, verbose=2):
+    """Train one model per fold on every asset in `parts` pooled together
+    ({name: (X, y, dates)}, all on the same dates) and predict its test rows.
+    Returns out-of-sample signals, labels and the target scale of the model
+    behind each row, as DataFrames indexed by test date."""
+    dates = next(iter(parts.values()))[2]
+    sig, lab, scl = [], [], []
+    for tr, va, te in folds:
+        pool = lambda idx, j: np.concatenate([p[j][idx] for p in parts.values()])
+        X_tr, y_tr, X_va, y_va = pool(tr, 0), pool(tr, 1), pool(va, 0), pool(va, 1)
+        k_tr, k_va = ~np.isnan(y_tr), ~np.isnan(y_va)
+        if len(folds) > 1:
+            print(f"Fold {dates[te][0].date()} to {dates[te][-1].date()}: "
+                  f"training on {dates[tr][0].date()} to {dates[tr][-1].date()}")
+        model, scale = train_outlook(X_tr[k_tr], y_tr[k_tr], X_va[k_va], y_va[k_va],
+                                     epochs, verbose=verbose if len(folds) == 1 else 0)
+        idx = dates[te]
+        sig.append(pd.DataFrame({c: model.predict(p[0][te], verbose=0).ravel()
+                                 for c, p in parts.items()}, index=idx))
+        lab.append(pd.DataFrame({c: p[1][te] for c, p in parts.items()}, index=idx))
+        scl.append(pd.Series(scale, index=idx))
+    return pd.concat(sig), pd.concat(lab), pd.concat(scl)
+
+
 def label_fit(signal, y, scale):
     """Out-of-sample MAE and direction hit rate where the label exists."""
     ok = ~np.isnan(y)
-    y_n = np.clip(y[ok] / scale, -1, 1)
+    y_n = np.clip(y[ok] / np.broadcast_to(scale, y.shape)[ok], -1, 1)
     s = np.asarray(signal)[ok]
     return np.mean(np.abs(s - y_n)), np.mean(np.sign(s) == np.sign(y_n))
 
@@ -200,6 +242,16 @@ def backtest(prices, signal, threshold=0.0, cost_bps=5):
     trades = pos.diff().abs().fillna(pos.iloc[0])
     strat = pos * fwd - trades * cost_bps / 1e4
     return pd.DataFrame({"strategy": strat, "buy_hold": fwd, "position": pos})
+
+
+def baseline_signals(prices, ma=200, lookback=252):
+    """Classic rules to benchmark Outlook against, shaped like Outlook's
+    signal (hold when above 0) and using only data up to each date.
+      200-day MA:        price relative to its 200-day moving average
+      12-month momentum: return over the past 12 months
+    Works on a Series (one asset) or a DataFrame (dates x assets)."""
+    return {"200-day MA": prices / prices.rolling(ma).mean() - 1,
+            "12-month momentum": prices / prices.shift(lookback) - 1}
 
 
 def portfolio_backtest(prices, signals, threshold=0.0, cost_bps=5):
@@ -291,28 +343,38 @@ def plot_equity(returns, path, title):
 
 
 # ---------------------------------------------------------------- main
+def make_folds(parts, N, a):
+    """One chronological split, or walk-forward folds with --walk-forward."""
+    dates = next(iter(parts.values()))[2]
+    if not a.walk_forward:
+        return [chrono_split(len(dates), N, a.test_frac)]
+    first = a.wf_start or dates[0].year + 7
+    return walk_folds(dates, N, first, a.walk_forward)
+
+
 def run_single(a):
     prices = load_prices(a.ticker, a.csv, a.start, a.synthetic)
     N = a.horizon
     print(f"{len(prices)} prices, {prices.index[0].date()} to {prices.index[-1].date()}")
 
-    X, y, dates = prepare_asset(prices, N)
-    tr, va, te = chrono_split(len(dates), N, a.test_frac)
-    tr, va = tr[~np.isnan(y[tr])], va[~np.isnan(y[va])]
+    parts = {"asset": prepare_asset(prices, N)}
+    sig, lab, scale = fit_predict(parts, make_folds(parts, N, a), a.epochs)
+    signal, dates = sig["asset"], sig.index
 
-    model, scale = train_outlook(X[tr], y[tr], X[va], y[va], a.epochs)
-    signal = pd.Series(model.predict(X[te], verbose=0).ravel(), index=dates[te])
-
-    mae, hit = label_fit(signal, y[te], scale)
+    mae, hit = label_fit(signal, lab["asset"].to_numpy(), scale.to_numpy())
     print(f"\nTest MAE {mae:.3f} | direction hit rate {hit:.1%}")
 
     bt = backtest(prices, signal, a.threshold, a.cost_bps)
     rets = bt[["strategy", "buy_hold"]].rename(
         columns={"strategy": "Outlook", "buy_hold": "Buy & hold"})
+    pos = {"Outlook": bt["position"], "Buy & hold": pd.Series(1.0, index=dates)}
+    for name, s in baseline_signals(prices).items():  # same dates, costs
+        b = backtest(prices, s.reindex(dates), 0.0, a.cost_bps)
+        rets[name], pos[name] = b["strategy"], b["position"]
     res = pd.DataFrame({c: stats(rets[c]) for c in rets})
-    print(f"\nTest period {dates[te][0].date()} to {dates[te][-1].date()}")
-    print(f"Time in market {bt['position'].mean():.0%}, "
-          f"trades {int(bt['position'].diff().abs().sum())}")
+    res.loc["InMarket"] = [pos[c].mean() for c in rets]
+    res.loc["Trades"] = [pos[c].diff().abs().sum() for c in rets]
+    print(f"\nTest period {dates[0].date()} to {dates[-1].date()}")
     print(res.round(3).to_string())
     print("\nBy market regime:")
     print(regime_table(rets, regimes(prices)).round(3).to_string())
@@ -335,31 +397,24 @@ def run_portfolio(a):
 
     # One model, pooled over assets: more examples than any single series
     parts = {c: prepare_asset(prices[c], N) for c in prices}
-    dates = next(iter(parts.values()))[2]
-    tr, va, te = chrono_split(len(dates), N, a.test_frac)
-    pool = lambda idx, j: np.concatenate([p[j][idx] for p in parts.values()])
-    X_tr, y_tr, X_va, y_va = pool(tr, 0), pool(tr, 1), pool(va, 0), pool(va, 1)
-    k_tr, k_va = ~np.isnan(y_tr), ~np.isnan(y_va)
+    signals, lab, scale = fit_predict(parts, make_folds(parts, N, a), a.epochs)
+    dates = signals.index
 
-    model, scale = train_outlook(X_tr[k_tr], y_tr[k_tr],
-                                 X_va[k_va], y_va[k_va], a.epochs)
-    signals = pd.DataFrame(
-        {c: model.predict(p[0][te], verbose=0).ravel() for c, p in parts.items()},
-        index=dates[te])
-
-    mae, hit = label_fit(signals.to_numpy().ravel(),
-                         np.column_stack([p[1][te] for p in parts.values()]).ravel(),
-                         scale)
+    mae, hit = label_fit(signals.to_numpy().ravel(), lab.to_numpy().ravel(),
+                         np.repeat(scale.to_numpy(), signals.shape[1]))
     print(f"\nTest MAE {mae:.3f} | direction hit rate {hit:.1%}")
 
     rets, w = portfolio_backtest(prices, signals, a.threshold, a.cost_bps)
     rets.columns = ["Outlook portfolio", "Equal weight"]
+    for name, s in baseline_signals(prices).items():  # same rule, other signal
+        rets[name] = portfolio_backtest(prices, s.reindex(dates), 0.0,
+                                        a.cost_bps)[0]["strategy"]
     if a.benchmark:
         bench = load_prices(a.benchmark, start=a.start)
         rets[a.benchmark] = (bench.pct_change().shift(-1)
                              .reindex(rets.index).fillna(0.0))
     res = pd.DataFrame({c: stats(rets[c]) for c in rets})
-    print(f"\nTest period {dates[te][0].date()} to {dates[te][-1].date()}")
+    print(f"\nTest period {dates[0].date()} to {dates[-1].date()}")
     print(f"Average assets held {(w > 0).sum(axis=1).mean():.1f} of {w.shape[1]}, "
           f"fully in cash {(w.sum(axis=1) == 0).mean():.0%} of days")
     print(res.round(3).to_string())
@@ -389,6 +444,11 @@ def main():
     ap.add_argument("--cost-bps", type=float, default=5)
     ap.add_argument("--test-frac", type=float, default=0.25)
     ap.add_argument("--epochs", type=int, default=EPOCHS)
+    ap.add_argument("--walk-forward", type=int, default=0, metavar="YEARS",
+                    help="retrain every YEARS years and test on the years after, "
+                         "instead of one train/test split")
+    ap.add_argument("--wf-start", type=int, metavar="YEAR",
+                    help="first walk-forward test year (default: 7 years into the data)")
     a = ap.parse_args()
 
     if a.tickers or (a.synthetic and a.n_assets > 1):
