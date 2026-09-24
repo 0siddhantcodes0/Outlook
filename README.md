@@ -26,11 +26,15 @@ that falls early is negative.
 3. **Split:** train, validation and test run in time order. An `N`-day gap
    sits before each later block, so earlier labels never see its prices.
 4. **Single asset:** go long when Outlook is above the threshold and stay
-   flat otherwise. Compared with buy and hold, overall and for each
-   regime (bull, sideways or bear).
+   flat otherwise. Compared with buy and hold and with two classic rules
+   run the same way, overall and for each regime (bull, sideways or bear).
+   The rules are: hold when the price is above its 200-day moving average,
+   and hold when the past 12 months' return is positive. Outlook only adds
+   value if it beats these free rules.
 5. **Portfolio:** one model is trained on all the assets together. Capital
    is split equally among the assets with a positive Outlook. Compared with
-   an equal-weight basket and a cap-weighted benchmark ticker if you give one.
+   an equal-weight basket, the same rule driven by the two classic signals,
+   and a cap-weighted benchmark ticker if you give one.
 
 ## Usage
 

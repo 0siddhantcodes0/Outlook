@@ -7,9 +7,10 @@ Implements the writeup end to end:
      day windows, 200 days of history each (1,200 inputs)
   3. Model: residual MLP, tanh output, MAE loss, Adam 1e-3, 30 epochs
   4. Backtest: long when the signal is above a threshold, flat otherwise,
-     compared with buy and hold on an out-of-sample test period (one split,
-     or walk-forward: retrain every few years, test on the years after), overall
-     and split by market regime (bull / sideways / bear)
+     on an out-of-sample test period (one split, or walk-forward: retrain
+     every few years, test on the years after). Compared with buy and hold
+     and two classic rules run the same way (200-day moving average,
+     12-month momentum), overall and by market regime (bull/sideways/bear)
   5. Portfolio: one model trained on a pool of assets, capital spread
      equally over assets with a positive Outlook, compared with an
      equal-weight basket and an optional cap-weighted benchmark ticker
@@ -243,6 +244,16 @@ def backtest(prices, signal, threshold=0.0, cost_bps=5):
     return pd.DataFrame({"strategy": strat, "buy_hold": fwd, "position": pos})
 
 
+def baseline_signals(prices, ma=200, lookback=252):
+    """Classic rules to benchmark Outlook against, shaped like Outlook's
+    signal (hold when above 0) and using only data up to each date.
+      200-day MA:        price relative to its 200-day moving average
+      12-month momentum: return over the past 12 months
+    Works on a Series (one asset) or a DataFrame (dates x assets)."""
+    return {"200-day MA": prices / prices.rolling(ma).mean() - 1,
+            "12-month momentum": prices / prices.shift(lookback) - 1}
+
+
 def portfolio_backtest(prices, signals, threshold=0.0, cost_bps=5):
     """prices, signals: DataFrames (dates x assets). Equal weight over the
     assets whose Outlook is above the threshold, cash when none are.
@@ -356,10 +367,14 @@ def run_single(a):
     bt = backtest(prices, signal, a.threshold, a.cost_bps)
     rets = bt[["strategy", "buy_hold"]].rename(
         columns={"strategy": "Outlook", "buy_hold": "Buy & hold"})
+    pos = {"Outlook": bt["position"], "Buy & hold": pd.Series(1.0, index=dates)}
+    for name, s in baseline_signals(prices).items():  # same dates, costs
+        b = backtest(prices, s.reindex(dates), 0.0, a.cost_bps)
+        rets[name], pos[name] = b["strategy"], b["position"]
     res = pd.DataFrame({c: stats(rets[c]) for c in rets})
+    res.loc["InMarket"] = [pos[c].mean() for c in rets]
+    res.loc["Trades"] = [pos[c].diff().abs().sum() for c in rets]
     print(f"\nTest period {dates[0].date()} to {dates[-1].date()}")
-    print(f"Time in market {bt['position'].mean():.0%}, "
-          f"trades {int(bt['position'].diff().abs().sum())}")
     print(res.round(3).to_string())
     print("\nBy market regime:")
     print(regime_table(rets, regimes(prices)).round(3).to_string())
@@ -391,6 +406,9 @@ def run_portfolio(a):
 
     rets, w = portfolio_backtest(prices, signals, a.threshold, a.cost_bps)
     rets.columns = ["Outlook portfolio", "Equal weight"]
+    for name, s in baseline_signals(prices).items():  # same rule, other signal
+        rets[name] = portfolio_backtest(prices, s.reindex(dates), 0.0,
+                                        a.cost_bps)[0]["strategy"]
     if a.benchmark:
         bench = load_prices(a.benchmark, start=a.start)
         rets[a.benchmark] = (bench.pct_change().shift(-1)
