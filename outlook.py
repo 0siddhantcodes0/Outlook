@@ -105,18 +105,29 @@ def feature_streams(prices):
     return pd.DataFrame(cols)
 
 
-def build_inputs(streams):
+def trend_inputs(prices, ma=200, lookback=252):
+    """Long-trend levels the windowed streams can't carry: z-scoring each
+    200-day history on itself removes whether the price sits above or below
+    its long average. Same quantities as the baseline rules, left raw."""
+    return pd.DataFrame({"ma_gap": prices / prices.rolling(ma).mean() - 1,
+                         "mom12": prices / prices.shift(lookback) - 1})
+
+
+def build_inputs(streams, extra=None):
     """For each date, stack the last HISTORY values of every stream, each
-    history z-scored on its own window. Returns X (n, 6*HISTORY) and dates."""
+    history z-scored on its own window, then append that date's row of
+    `extra` unchanged. Returns X (n, 6*HISTORY [+ extra cols]) and dates."""
     arr = streams.to_numpy()
+    ext = None if extra is None else extra.reindex(streams.index).to_numpy()
     n, s = arr.shape
     rows, dates = [], []
     for t in range(HISTORY - 1, n):
         win = arr[t - HISTORY + 1:t + 1]          # (HISTORY, s)
-        if np.isnan(win).any():
+        if np.isnan(win).any() or (ext is not None and np.isnan(ext[t]).any()):
             continue
         mu, sd = win.mean(0), win.std(0) + 1e-8
-        rows.append(((win - mu) / sd).T.reshape(-1))  # stream-major
+        row = ((win - mu) / sd).T.reshape(-1)     # stream-major
+        rows.append(row if ext is None else np.concatenate([row, ext[t]]))
         dates.append(streams.index[t])
     return np.asarray(rows, dtype="float32"), pd.DatetimeIndex(dates)
 
@@ -151,10 +162,12 @@ def build_model(input_dim):
 
 
 # ---------------------------------------------------------------- training
-def prepare_asset(prices, N):
+def prepare_asset(prices, N, trend=False):
     """Inputs, scale-free target and dates for one price series.
-    O_t is divided by P_t because the raw value scales with price."""
-    X, dates = build_inputs(feature_streams(prices))
+    O_t is divided by P_t because the raw value scales with price.
+    trend=True appends the raw long-trend inputs (see trend_inputs)."""
+    X, dates = build_inputs(feature_streams(prices),
+                            trend_inputs(prices) if trend else None)
     y = (outlook_target(prices, N) / prices).reindex(dates).to_numpy()
     return X, y, dates
 
@@ -250,11 +263,28 @@ def label_fit(signal, y, scale):
 
 
 # ---------------------------------------------------------------- backtest
-def backtest(prices, signal, threshold=0.0, cost_bps=5):
+def positions(signal, threshold=0.0, band=0.0):
+    """1 = hold, 0 = cash. Switch in when the signal rises above
+    threshold + band, out when it falls below threshold - band, and keep
+    the previous position in between (band=0: hold whenever above).
+    Works on a Series or a DataFrame (one column per asset)."""
+    sig = np.atleast_2d(np.asarray(signal, dtype=float).T).T
+    out = np.zeros_like(sig)
+    cur = np.zeros(sig.shape[1])
+    for t in range(len(sig)):
+        cur = np.where(sig[t] > threshold + band, 1.0,
+                       np.where(sig[t] < threshold - band, 0.0, cur))
+        out[t] = cur
+    if isinstance(signal, pd.Series):
+        return pd.Series(out[:, 0], index=signal.index)
+    return pd.DataFrame(out, index=signal.index, columns=signal.columns)
+
+
+def backtest(prices, signal, threshold=0.0, cost_bps=5, band=0.0):
     """Decide at close t, hold over t -> t+1. Cost charged on each switch."""
     px = prices.reindex(signal.index)
     fwd = px.pct_change().shift(-1).fillna(0.0)
-    pos = (signal > threshold).astype(float)
+    pos = positions(signal, threshold, band)
     trades = pos.diff().abs().fillna(pos.iloc[0])
     strat = pos * fwd - trades * cost_bps / 1e4
     return pd.DataFrame({"strategy": strat, "buy_hold": fwd, "position": pos})
@@ -270,14 +300,25 @@ def baseline_signals(prices, ma=200, lookback=252):
             "12-month momentum": prices / prices.shift(lookback) - 1}
 
 
-def portfolio_backtest(prices, signals, threshold=0.0, cost_bps=5):
+def portfolio_backtest(prices, signals, threshold=0.0, cost_bps=5, band=0.0,
+                       top=0, rebalance=1):
     """prices, signals: DataFrames (dates x assets). Equal weight over the
-    assets whose Outlook is above the threshold, cash when none are.
+    assets whose signal is above the threshold (with an optional band, see
+    positions), cash when none are. With top=K, hold the K highest signals
+    instead, whatever their sign. Weights are only reset every `rebalance`
+    rows and held (at target) in between.
     Returns daily strategy returns, equal-weight basket returns, weights."""
     px = prices.reindex(signals.index)
     fwd = px.pct_change().shift(-1).fillna(0.0)
-    on = (signals > threshold).astype(float)
+    if top:
+        rank = signals.rank(axis=1, ascending=False, method="first")
+        on = (rank <= top).astype(float)
+    else:
+        on = positions(signals, threshold, band)
     w = on.div(on.sum(axis=1).replace(0, np.nan), axis=0).fillna(0.0)
+    if rebalance > 1:
+        keep = np.arange(len(w)) % rebalance == 0
+        w = w.where(pd.Series(keep, index=w.index), np.nan).ffill()
     turnover = w.diff().abs().sum(axis=1).fillna(w.iloc[0].abs().sum())
     strat = (w * fwd).sum(axis=1) - turnover * cost_bps / 1e4
     basket = fwd.mean(axis=1)
@@ -373,14 +414,14 @@ def run_single(a):
     N = a.horizon
     print(f"{len(prices)} prices, {prices.index[0].date()} to {prices.index[-1].date()}")
 
-    parts = {"asset": prepare_asset(prices, N)}
+    parts = {"asset": prepare_asset(prices, N, a.trend_features)}
     sig, lab, scale = fit_predict(parts, make_folds(parts, N, a), a.epochs)
     signal, dates = sig["asset"], sig.index
 
     mae, hit = label_fit(signal, lab["asset"].to_numpy(), scale.to_numpy())
     print(f"\nTest MAE {mae:.3f} | direction hit rate {hit:.1%}")
 
-    bt = backtest(prices, signal, a.threshold, a.cost_bps)
+    bt = backtest(prices, signal, a.threshold, a.cost_bps, a.band)
     rets = bt[["strategy", "buy_hold"]].rename(
         columns={"strategy": "Outlook", "buy_hold": "Buy & hold"})
     pos = {"Outlook": bt["position"], "Buy & hold": pd.Series(1.0, index=dates)}
@@ -412,7 +453,8 @@ def run_portfolio(a):
           f"{prices.index[0].date()} to {prices.index[-1].date()}")
 
     # One model, pooled over assets: more examples than any single series
-    parts = align_parts({c: prepare_asset(prices[c], N) for c in prices})
+    parts = align_parts({c: prepare_asset(prices[c], N, a.trend_features)
+                         for c in prices})
     signals, lab, scale = fit_predict(parts, make_folds(parts, N, a), a.epochs)
     dates = signals.index
 
@@ -420,11 +462,13 @@ def run_portfolio(a):
                          np.repeat(scale.to_numpy(), signals.shape[1]))
     print(f"\nTest MAE {mae:.3f} | direction hit rate {hit:.1%}")
 
-    rets, w = portfolio_backtest(prices, signals, a.threshold, a.cost_bps)
+    rule = dict(top=a.top, rebalance=a.rebalance)
+    rets, w = portfolio_backtest(prices, signals, a.threshold, a.cost_bps,
+                                 a.band, **rule)
     rets.columns = ["Outlook portfolio", "Equal weight"]
     for name, s in baseline_signals(prices).items():  # same rule, other signal
         rets[name] = portfolio_backtest(prices, s.reindex(dates), 0.0,
-                                        a.cost_bps)[0]["strategy"]
+                                        a.cost_bps, **rule)[0]["strategy"]
     if a.benchmark:
         bench = load_prices(a.benchmark, start=a.start)
         rets[a.benchmark] = (bench.pct_change().shift(-1)
@@ -460,6 +504,16 @@ def main():
     ap.add_argument("--cost-bps", type=float, default=5)
     ap.add_argument("--test-frac", type=float, default=0.25)
     ap.add_argument("--epochs", type=int, default=EPOCHS)
+    ap.add_argument("--band", type=float, default=0.0,
+                    help="trade less: switch in above threshold+BAND, out below "
+                         "threshold-BAND, otherwise keep the position (Outlook only)")
+    ap.add_argument("--top", type=int, default=0, metavar="K",
+                    help="portfolio: hold the K highest-scoring assets instead of "
+                         "every asset above the threshold (baselines ranked alike)")
+    ap.add_argument("--rebalance", type=int, default=1, metavar="DAYS",
+                    help="portfolio: reset weights only every DAYS trading days")
+    ap.add_argument("--trend-features", action="store_true",
+                    help="add the 200-day MA gap and 12-month return as raw inputs")
     ap.add_argument("--walk-forward", type=int, default=0, metavar="YEARS",
                     help="retrain every YEARS years and test on the years after, "
                          "instead of one train/test split")

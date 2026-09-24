@@ -60,6 +60,25 @@ python outlook.py --csv data/SPY.csv --walk-forward 2 --wf-start 2000
 Options: `--horizon` (N, default 21), `--threshold`, `--cost-bps`,
 `--test-frac` and `--epochs`.
 
+**Variations** (all off by default):
+
+- `--band 0.2` trades less. It switches into an asset only when the score
+  rises above +0.2 and out only when it falls below −0.2. In between it
+  keeps the current position, which avoids flipping in and out around zero.
+- `--trend-features` adds the 200-day moving-average gap and the 12-month
+  return to the model's inputs as raw values. The existing streams are
+  z-scored within each 200-day window, which hides whether the price is
+  above or below its long-run trend.
+- `--top 3 --rebalance 21` (portfolio mode) holds the 3 highest-scoring
+  assets and re-picks them every 21 trading days, instead of holding every
+  asset with a positive score. The baseline rules are ranked the same way,
+  so the comparison stays fair.
+
+```bash
+python outlook.py --tickers XEG.TO XFN.TO XIT.TO XRE.TO --benchmark XIU.TO \
+  --start 2001-01-01 --walk-forward 2 --wf-start 2008 --band 0.2
+```
+
 Regime labels come from a centred 126-day return (±10%). They look ahead
 on purpose: they are only used to group results for evaluation, never as
 an input to the model.
@@ -74,3 +93,42 @@ without a network connection:
 ```bash
 python outlook.py --csv data/SPY.csv
 ```
+
+## Leveraged ETF backtester (`leverage.py`)
+
+Tests three ways of using daily-reset leveraged ETFs (BetaPro, Direxion
+and similar) on real prices, with costs fitted to the real funds.
+
+| Mode | What it tests |
+|---|---|
+| `hold` | Holding an L× fund on an index, optionally only while the index is above its 200-day average (cash earns T-bills otherwise) |
+| `swing` | Trading a real fund every few days, buying at the open or near the close and selling at the open or near the close, from daily open/close prices |
+| `rotate` | Each month, holding the top K sectors by recent momentum as L× funds. It also reruns the rule on every possible rebalance day, because one run can look great or terrible purely from which day of the month it trades |
+
+```bash
+python leverage.py swing --ticker SOXL --entry open --exit close --hold 3 --cost-bps 5
+python leverage.py swing --ticker SOXL --entry close --exit open --hold 3 --trend-index SOXX
+python leverage.py hold --index SPY --leverage 3 --trend --start 2000-01-01
+python leverage.py rotate --indexes SOXX QQQ XEG.TO XFN.TO GDX SPY --leverage 3 --top 2 --trend
+```
+
+**How simulated funds work.** Each day a simulated fund returns L × the
+index, minus (L−1) × the T-bill rate for the money it borrows, minus a
+yearly cost per unit of extra leverage. That cost was fitted on 2010–2026
+daily prices of the real funds, and it is far above the 1.15% management fee:
+
+| Real fund | Tracks | Yearly cost per unit of extra leverage |
+|---|---|---|
+| CNDU | 2x TSX 60 | 2.58% |
+| SPXU.TO | 2x S&P 500 | 4.56% |
+| QQU | 2x Nasdaq-100 | 4.59% |
+| NRGU | 2x TSX energy | 1.59% |
+| CFOU | 2x TSX financials | 1.72% |
+| GDXU | 2x gold miners | 1.00% |
+| SOXL (US) | 3x semiconductors | 2.03% |
+
+**Cost per trade matters.** `swing` charges `--cost-bps` on every buy and
+sell. That covers half the bid-ask spread plus commission. The spread is
+tiny for US SOXL, but TSX BetaPro funds trade $1–20M a day, so their
+spreads are wider. At 80+ round trips a year, 0.10% per side costs about
+17% a year.

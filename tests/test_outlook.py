@@ -127,3 +127,33 @@ def test_align_parts_uses_common_dates():
     assert al["a"][2].equals(al["b"][2])
     for X, y, d in al.values():
         assert len(X) == len(y) == len(d)
+
+
+def test_band_keeps_position_inside_band():
+    sig = series([0.3, 0.1, -0.1, -0.3, 0.1, 0.3])
+    assert ol.positions(sig, band=0.2).tolist() == [1, 1, 1, 0, 0, 1]
+    assert ol.positions(sig).tolist() == [1, 1, 0, 0, 1, 1]  # band 0 = old rule
+
+
+def test_top_k_and_rebalance():
+    idx = pd.bdate_range("2020-01-01", periods=4)
+    prices = pd.DataFrame(100.0, index=idx, columns=list("ABC"))
+    sig = pd.DataFrame({"A": [3, 1, 1, 3], "B": [2, 3, 3, 2], "C": [1, 2, 2, 1]},
+                       index=idx, dtype=float)
+    _, w = ol.portfolio_backtest(prices, sig, cost_bps=0, top=2)
+    assert w.iloc[0].tolist() == [0.5, 0.5, 0] and w.iloc[1].tolist() == [0, 0.5, 0.5]
+    _, w2 = ol.portfolio_backtest(prices, sig, cost_bps=0, top=2, rebalance=2)
+    assert w2.iloc[1].tolist() == w2.iloc[0].tolist()   # held between rebalances
+    assert w2.iloc[2].tolist() == [0, 0.5, 0.5]
+
+
+def test_trend_features_appended_and_past_only():
+    p = ol.synthetic_prices(5, 900)
+    X0, _, d0 = ol.prepare_asset(p, 21)
+    X1, _, d1 = ol.prepare_asset(p, 21, trend=True)
+    assert X1.shape[1] == X0.shape[1] + 2
+    assert d1[0] >= d0[0]                                # needs 252 days more
+    p2 = p.copy(); p2.iloc[-60:] *= 2
+    X2, _, d2 = ol.prepare_asset(p2, 21, trend=True)
+    keep = d1 < p.index[-60]
+    assert np.array_equal(X1[keep], X2[: keep.sum()])
