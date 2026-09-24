@@ -50,3 +50,14 @@ Options: `--horizon` (N, default 21), `--threshold`, `--cost-bps`,
 Regime labels come from a centred 126-day return (±10%). They look ahead
 on purpose: they are only used to group results for evaluation, never as
 an input to the model.
+
+## Sample data
+
+`data/SPY.csv` holds daily SPY closes (Feb 1993 – Apr 2018). They are built by
+compounding the daily total returns (dividends reinvested) in Zipline's
+bundled `SPY_benchmark.csv`, starting at 100. It lets you run the model
+without a network connection:
+
+```bash
+python outlook.py --csv data/SPY.csv
+```
