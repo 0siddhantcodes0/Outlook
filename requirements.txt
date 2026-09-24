@@ -1,0 +1,7 @@
+numpy
+pandas
+matplotlib
+keras>=3
+tensorflow
+yfinance
+pytest
