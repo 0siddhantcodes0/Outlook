@@ -115,3 +115,15 @@ def test_ma_baseline_sign():
     down = series(np.linspace(200, 100, 300))
     assert (ol.baseline_signals(up)["200-day MA"].dropna() > 0).all()
     assert (ol.baseline_signals(down)["12-month momentum"].dropna() < 0).all()
+
+
+def test_align_parts_uses_common_dates():
+    a = ol.synthetic_prices(3, 500)
+    b = ol.synthetic_prices(4, 500)
+    b.iloc[10:16] = b.iloc[10]                          # flat week: 0/0 z-score
+    parts = {"a": ol.prepare_asset(a, 21), "b": ol.prepare_asset(b, 21)}
+    assert len(parts["a"][2]) != len(parts["b"][2])
+    al = ol.align_parts(parts)
+    assert al["a"][2].equals(al["b"][2])
+    for X, y, d in al.values():
+        assert len(X) == len(y) == len(d)

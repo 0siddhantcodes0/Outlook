@@ -159,6 +159,21 @@ def prepare_asset(prices, N):
     return X, y, dates
 
 
+def align_parts(parts):
+    """Keep only the dates every asset has inputs for. build_inputs skips a
+    date when any feature is undefined (e.g. a flat price makes the
+    standardized deviation 0/0), so assets can otherwise disagree on dates
+    and pooled folds would pair rows from different days."""
+    common = None
+    for _, _, d in parts.values():
+        common = d if common is None else common.intersection(d)
+    out = {}
+    for c, (X, y, d) in parts.items():
+        m = d.isin(common)
+        out[c] = (X[m], y[m], d[m])
+    return out
+
+
 def chrono_split(n, N, test_frac, val_frac=0.15):
     """Train / validation / test index ranges in time order. An N-row gap
     before each later block keeps earlier labels (which look N rows ahead)
@@ -203,7 +218,8 @@ def train_outlook(X_tr, y_tr, X_va, y_va, epochs, verbose=2):
 
 def fit_predict(parts, folds, epochs, verbose=2):
     """Train one model per fold on every asset in `parts` pooled together
-    ({name: (X, y, dates)}, all on the same dates) and predict its test rows.
+    ({name: (X, y, dates)}, all on the same dates: see align_parts) and
+    predict its test rows.
     Returns out-of-sample signals, labels and the target scale of the model
     behind each row, as DataFrames indexed by test date."""
     dates = next(iter(parts.values()))[2]
@@ -396,7 +412,7 @@ def run_portfolio(a):
           f"{prices.index[0].date()} to {prices.index[-1].date()}")
 
     # One model, pooled over assets: more examples than any single series
-    parts = {c: prepare_asset(prices[c], N) for c in prices}
+    parts = align_parts({c: prepare_asset(prices[c], N) for c in prices})
     signals, lab, scale = fit_predict(parts, make_folds(parts, N, a), a.epochs)
     dates = signals.index
 
