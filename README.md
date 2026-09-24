@@ -44,6 +44,15 @@ python outlook.py --synthetic --n-assets 5                   # offline portfolio
 python -m pytest -q tests
 ```
 
+**Walk-forward.** `--walk-forward 2 --wf-start 2000` retrains the model every
+two years on all the data before that point, then tests it on the two years
+after. The test covers every year from 2000 on, rather than only the last 25%
+of the data. It works in both single-asset and portfolio mode:
+
+```bash
+python outlook.py --csv data/SPY.csv --walk-forward 2 --wf-start 2000
+```
+
 Options: `--horizon` (N, default 21), `--threshold`, `--cost-bps`,
 `--test-frac` and `--epochs`.
 
