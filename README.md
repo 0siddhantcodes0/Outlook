@@ -104,6 +104,7 @@ and similar) on real prices, with costs fitted to the real funds.
 | `hold` | Holding an L× fund on an index, optionally only while the index is above its 200-day average (cash earns T-bills otherwise) |
 | `swing` | Trading a real fund every few days, buying at the open or near the close and selling at the open or near the close, from daily open/close prices |
 | `rotate` | Each month, holding the top K sectors by recent momentum as L× funds. It also reruns the rule on every possible rebalance day, because one run can look great or terrible purely from which day of the month it trades |
+| `signal` | Today's picks for the 2x sector rotation: which BetaPro funds to hold, from the latest close |
 
 ```bash
 python leverage.py swing --ticker SOXL --entry open --exit close --hold 3 --cost-bps 5
@@ -111,6 +112,32 @@ python leverage.py swing --ticker SOXL --entry close --exit open --hold 3 --tren
 python leverage.py hold --index SPY --leverage 3 --trend --start 2000-01-01
 python leverage.py rotate --indexes SOXX QQQ XEG.TO XFN.TO GDX SPY --leverage 3 --top 2 --trend
 ```
+
+**Monthly signal.** `signal` ranks the indexes behind six BetaPro 2x
+TSX-listed funds by their 3-month return:
+
+| Index | Fund |
+|---|---|
+| QQQ | QQU |
+| SPY | SPXU |
+| XEG | NRGU |
+| XFN | CFOU |
+| XGD | GDXU |
+| XIU | CNDU |
+
+It picks the top 2, and sends a pick's share to cash when its index is
+below its 200-day average. `--capital` shows dollar amounts for a leveraged
+sleeve of `--satellite` (default 25%) of the portfolio:
+
+```bash
+python leverage.py signal --capital 20000
+```
+
+Tested from 2003 to 2026 on all 21 rebalance days, this rotation at 2x made
+a typical 14.6% a year (range 5.7–20.9%), with typical worst drops of −60%.
+As a 25% sleeve beside 75% S&P 500, rebalanced every January, the total made
+13.0% a year (range 11.0–14.9%) with a −52% worst drop. Holding the S&P 500
+alone made 11.8% a year with a −55% worst drop.
 
 **How simulated funds work.** Each day a simulated fund returns L × the
 index, minus (L−1) × the T-bill rate for the money it borrows, minus a
