@@ -159,3 +159,49 @@ sell. That covers half the bid-ask spread plus commission. The spread is
 tiny for US SOXL, but TSX BetaPro funds trade $1–20M a day, so their
 spreads are wider. At 80+ round trips a year, 0.10% per side costs about
 17% a year.
+
+## Portfolio backtester in CAD (`portfolio.py`)
+
+This backtests fixed-weight ETF portfolios in Canadian dollars. US-listed
+funds are converted at the daily CADUSD rate. Holdings drift between
+rebalances; at each rebalance they reset to target weights, with a cost
+charged on what gets traded.
+
+It includes the **Higher growth** portfolio from
+[kellyportfolios.com](https://kellyportfolios.com/portfolios/higher-growth/),
+as published on 6 Sep 2026, in several versions:
+
+| Key | What it holds |
+|---|---|
+| `us` | The eight original US-listed funds |
+| `hybrid` | RSST, which has no Canadian equivalent, held in an RRSP, plus Canadian-listed substitutes for the other seven funds |
+| `canadian` | All Canadian-listed, with XUS taking RSST's place (this loses the trend-following part) |
+| `us-factors` / `canadian-factors` | Just the value and momentum part (the 65% outside RSST), rescaled to 100%. These funds have prices from Oct 2021, so the comparison covers 2022 |
+| `xeqt` | Plain all-equity benchmark |
+
+```bash
+python portfolio.py compare                    # us, hybrid, canadian and xeqt, yearly rebalance
+python portfolio.py compare --portfolios us-factors canadian-factors xeqt
+python portfolio.py holdings --portfolio hybrid --capital 50000
+```
+
+Results in CAD with real funds (yearly rebalancing, 10 bps per unit traded):
+
+| Portfolio | Sep 2023 – Sep 2026 | Worst drop |
+|---|---|---|
+| US original | 25.8%/yr | −19.2% |
+| Hybrid | 24.1%/yr | −18.9% |
+| All Canadian | 23.3%/yr | −15.2% |
+| XEQT | 21.7%/yr | −15.1% |
+
+| Value + momentum part only | Oct 2021 – Sep 2026 | Worst drop |
+|---|---|---|
+| US funds | 18.4%/yr | −17.9% |
+| Canadian substitutes | 14.9%/yr | −21.2% |
+| XEQT | 14.2%/yr | −19.1% |
+
+The Canadian substitutes mostly behave like XEQT. The parts of the portfolio
+that differ most from the market, RSST's trend stack and the small-cap value
+and emerging-markets value funds, have no Canadian-listed equivalent.
+Adjusted prices add dividends back in full, so the 15% US withholding tax
+that applies outside an RRSP is not deducted.
