@@ -123,7 +123,9 @@ def load_cad(tickers, start="2015-01-01"):
         if s.empty:
             raise SystemExit(f"No prices for {t!r}")
         out[t] = s / fx.reindex(s.index).ffill() if is_usd(t) else s
-    return pd.DataFrame(out).sort_index()
+    # A thinly traded fund can go days without a trade; carry its last price
+    # over short gaps so it doesn't cut every comparison short.
+    return pd.DataFrame(out).sort_index().ffill(limit=5)
 
 
 # ---------------------------------------------------------------- backtest
@@ -159,7 +161,8 @@ def backtest(prices, target, rebalance="yearly", cost=0.001):
 
 def stats(r):
     eq = (1 + r).cumprod()
-    yrs = len(r) / TRADING_DAYS
+    # calendar years: mixed TSX/NYSE calendars give more than 252 rows a year
+    yrs = (r.index[-1] - r.index[0]).days / 365.25
     dd = eq / eq.cummax() - 1
     return {"CAGR": eq.iloc[-1] ** (1 / yrs) - 1,
             "Vol": r.std() * np.sqrt(TRADING_DAYS),

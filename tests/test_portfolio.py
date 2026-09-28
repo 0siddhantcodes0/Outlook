@@ -54,3 +54,10 @@ def test_holdings_amounts():
     t = pf.holdings("hybrid", 40000)
     assert np.isclose(t.amount.sum(), 40000)
     assert t.loc[t.ticker == "RSST", "account"].item() == "RRSP"
+
+
+def test_short_gaps_do_not_end_the_backtest_early():
+    P = pd.DataFrame({"A": np.linspace(1, 2, len(IDX)), "B": np.linspace(1, 1.5, len(IDX))}, index=IDX)
+    P.iloc[-3:, 1] = np.nan                     # B not traded in the last 3 days
+    r, _ = pf.backtest(P.ffill(limit=5), pd.Series({"A": 0.5, "B": 0.5}), "never", cost=0)
+    assert r.index[-1] == IDX[-1]

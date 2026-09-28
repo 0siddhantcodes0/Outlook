@@ -189,16 +189,16 @@ Results in CAD with real funds (yearly rebalancing, 10 bps per unit traded):
 
 | Portfolio | Sep 2023 – Sep 2026 | Worst drop |
 |---|---|---|
-| US original | 25.8%/yr | −19.2% |
-| Hybrid | 24.1%/yr | −18.9% |
-| All Canadian | 23.3%/yr | −15.2% |
-| XEQT | 21.7%/yr | −15.1% |
+| US original | 25.7%/yr | −19.2% |
+| Hybrid | 23.3%/yr | −18.9% |
+| All Canadian | 23.1%/yr | −15.2% |
+| XEQT | 21.6%/yr | −15.1% |
 
 | Value + momentum part only | Oct 2021 – Sep 2026 | Worst drop |
 |---|---|---|
-| US funds | 18.4%/yr | −17.9% |
-| Canadian substitutes | 14.9%/yr | −21.2% |
-| XEQT | 14.2%/yr | −19.1% |
+| US funds | 18.3%/yr | −17.9% |
+| Canadian substitutes | 14.7%/yr | −21.2% |
+| XEQT | 14.1%/yr | −19.1% |
 
 The Canadian substitutes mostly behave like XEQT. The parts of the portfolio
 that differ most from the market, RSST's trend stack and the small-cap value
