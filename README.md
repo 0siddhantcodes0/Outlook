@@ -104,6 +104,7 @@ and similar) on real prices, with costs fitted to the real funds.
 | `hold` | Holding an L× fund on an index, optionally only while the index is above its 200-day average (cash earns T-bills otherwise) |
 | `swing` | Trading a real fund every few days, buying at the open or near the close and selling at the open or near the close, from daily open/close prices |
 | `rotate` | Each month, holding the top K sectors by recent momentum as L× funds. It also reruns the rule on every possible rebalance day, because one run can look great or terrible purely from which day of the month it trades |
+| `signal` | Today's picks for the 2x sector rotation: which BetaPro funds to hold, from the latest close |
 
 ```bash
 python leverage.py swing --ticker SOXL --entry open --exit close --hold 3 --cost-bps 5
@@ -111,6 +112,32 @@ python leverage.py swing --ticker SOXL --entry close --exit open --hold 3 --tren
 python leverage.py hold --index SPY --leverage 3 --trend --start 2000-01-01
 python leverage.py rotate --indexes SOXX QQQ XEG.TO XFN.TO GDX SPY --leverage 3 --top 2 --trend
 ```
+
+**Monthly signal.** `signal` ranks the indexes behind six BetaPro 2x
+TSX-listed funds by their 3-month return:
+
+| Index | Fund |
+|---|---|
+| QQQ | QQU |
+| SPY | SPXU |
+| XEG | NRGU |
+| XFN | CFOU |
+| XGD | GDXU |
+| XIU | CNDU |
+
+It picks the top 2, and sends a pick's share to cash when its index is
+below its 200-day average. `--capital` shows dollar amounts for a leveraged
+sleeve of `--satellite` (default 25%) of the portfolio:
+
+```bash
+python leverage.py signal --capital 20000
+```
+
+Tested from 2003 to 2026 on all 21 rebalance days, this rotation at 2x made
+a typical 14.6% a year (range 5.7–20.9%), with typical worst drops of −60%.
+As a 25% sleeve beside 75% S&P 500, rebalanced every January, the total made
+13.0% a year (range 11.0–14.9%) with a −52% worst drop. Holding the S&P 500
+alone made 11.8% a year with a −55% worst drop.
 
 **How simulated funds work.** Each day a simulated fund returns L × the
 index, minus (L−1) × the T-bill rate for the money it borrows, minus a
@@ -132,3 +159,106 @@ sell. That covers half the bid-ask spread plus commission. The spread is
 tiny for US SOXL, but TSX BetaPro funds trade $1–20M a day, so their
 spreads are wider. At 80+ round trips a year, 0.10% per side costs about
 17% a year.
+
+## Portfolio backtester in CAD (`portfolio.py`)
+
+This backtests fixed-weight ETF portfolios in Canadian dollars. US-listed
+funds are converted at the daily CADUSD rate. Holdings drift between
+rebalances; at each rebalance they reset to target weights, with a cost
+charged on what gets traded.
+
+It includes the **Higher growth** portfolio from
+[kellyportfolios.com](https://kellyportfolios.com/portfolios/higher-growth/),
+as published on 6 Sep 2026, in several versions:
+
+| Key | What it holds |
+|---|---|
+| `us` | The eight original US-listed funds |
+| `hybrid` | RSST, which has no Canadian equivalent, held in an RRSP, plus Canadian-listed substitutes for the other seven funds |
+| `canadian` | All Canadian-listed, with XUS taking RSST's place (this loses the trend-following part) |
+| `us-factors` / `canadian-factors` | Just the value and momentum part (the 65% outside RSST), rescaled to 100%. These funds have prices from Oct 2021, so the comparison covers 2022 |
+| `xeqt` | Plain all-equity benchmark |
+
+```bash
+python portfolio.py compare                    # us, hybrid, canadian and xeqt, yearly rebalance
+python portfolio.py compare --portfolios us-factors canadian-factors xeqt
+python portfolio.py holdings --portfolio hybrid --capital 50000
+```
+
+Results in CAD with real funds (yearly rebalancing, 10 bps per unit traded):
+
+| Portfolio | Sep 2023 – Sep 2026 | Worst drop |
+|---|---|---|
+| US original | 25.7%/yr | −19.2% |
+| Hybrid | 23.3%/yr | −18.9% |
+| All Canadian | 23.1%/yr | −15.2% |
+| XEQT | 21.6%/yr | −15.1% |
+
+| Value + momentum part only | Oct 2021 – Sep 2026 | Worst drop |
+|---|---|---|
+| US funds | 18.3%/yr | −17.9% |
+| Canadian substitutes | 14.7%/yr | −21.2% |
+| XEQT | 14.1%/yr | −19.1% |
+
+The Canadian substitutes mostly behave like XEQT. The parts of the portfolio
+that differ most from the market, RSST's trend stack and the small-cap value
+and emerging-markets value funds, have no Canadian-listed equivalent.
+Adjusted prices add dividends back in full, so the 15% US withholding tax
+that applies outside an RRSP is not deducted.
+
+## Leverage playbook for a Canadian account (`playbook.py`)
+
+This is a rules-based plan for TSX-listed BetaPro funds, priced in CAD and
+tradeable commission-free on Wealthsimple. It uses two engines, which make
+money at different times.
+
+| Engine | Rule | Holds |
+|---|---|---|
+| **Ladder** | Cash whenever the index closes below its 200-day average. Above it: tier = floor(25% ÷ 20-day volatility), from 1x up to the highest version available. Rechecked on Fridays; a break below the 200-day average acts the same day | Nasdaq: TQQQ.TO / QQU / XQQ / CASH.TO · S&P: TSPX / SPXU / XSP · Semis: BetaPro SOXL / XCHP · Energy: NRGU / XEG |
+| **Dip** | Brandon's RSI 6–10 rules on 3x Nasdaq. Five sleeves; each buys at the close when its RSI is at or below 28, and sells at the close once it's back above 28 | TQQQ.TO, otherwise CASH.TO |
+
+| Preset | Weights | Aug 2002 – Oct 2026 (simulated) | Worst drop | Losing years |
+|---|---|---|---|---|
+| `aggressive` | 50% Nasdaq ladder, 50% dip | 17.3%/yr | −20% | 2 of 25 |
+| `diversified` | 40% Nasdaq ladder, 30% dip, 15% semis ladder, 15% energy ladder | 15.7%/yr | −16% | 2 of 25 |
+| Nasdaq 1x, hold | | 15.8%/yr | −54% | 3 of 25 |
+| 3x Nasdaq, hold | | about 19.6%/yr | −95% | |
+
+Simulated funds use yearly costs fitted to the real BetaPro 2x funds
+(2010–2026), plus 0.1% per trade. With an extra 2% per unit of leverage,
+which is roughly today's CAD hedging cost, `aggressive` made 16.8%/yr.
+
+**The dip engine depends on buying at the close of the signal day.** Buying
+one close later cut its return from about 27% to about 6% a year. RSI dip
+rules also failed on the TSX 60 and on energy, so the dip engine trades only
+3x Nasdaq.
+
+```bash
+python playbook.py report                                   # what to hold now
+python playbook.py report --capital 20000                   # first buys for a new account
+python playbook.py report --holdings holdings.csv --cash 500 --preset diversified
+python playbook.py backtest --preset aggressive --extra-cost 0.02
+```
+
+**Holdings file.** Columns are `ticker,shares,avg_cost`, for example
+`TQQQ.TO,100,30.00`. Name it `holdings*.csv`, which `.gitignore` keeps out of
+this public repository, or put its contents in the `HOLDINGS_CSV`
+environment variable.
+
+### Daily Telegram report
+
+1. In Telegram, message **@BotFather**, send `/newbot` and follow the steps.
+   Copy the token it gives you.
+2. Send any message to your new bot. Then open
+   `https://api.telegram.org/bot<TOKEN>/getUpdates` and copy the `chat` → `id` number.
+3. Test it from your computer:
+   `TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... python playbook.py report --telegram`
+4. To have GitHub send it automatically each trading day in the 3 PM hour:
+   - In the repository settings, add the secrets `TELEGRAM_BOT_TOKEN`,
+     `TELEGRAM_CHAT_ID` and optionally `HOLDINGS_CSV`.
+   - Add the variable `PLAYBOOK_ENABLED` = `true`, and optionally
+     `PLAYBOOK_PRESET`.
+   - Use **Actions → playbook-report → Run workflow** to test it.
+
+   GitHub can start scheduled runs 5–15 minutes late. Treat the message as a
+   reminder, and confirm any dip signal shortly before 4:00 PM ET.

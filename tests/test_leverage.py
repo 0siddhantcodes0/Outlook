@@ -62,3 +62,29 @@ def test_rotate_all_days_runs_every_offset():
                      index=IDX, columns=list("ABC"))
     out = lv.rotate_all_days(P, 2, pd.Series(0.0, index=IDX), every=5, top=1, lookback=20)
     assert len(out) == 5 and out["CAGR"].notna().all()
+
+
+def test_signal_picks_top_momentum_and_applies_trend_rule():
+    P = pd.DataFrame({
+        "UP": 100 * 1.002 ** np.arange(300),                             # steady riser, above its 200-day
+        "SPIKE": np.r_[np.full(200, 200.0), np.full(37, 60.0),          # crashed, now rebounding hard
+                       np.linspace(60, 80, 63)],                         # but still below its 200-day
+        "FLAT": np.full(300, 100.0)}, index=IDX)
+    out = lv.signal(P, top=2, lookback=63, funds={"UP": "UPX"})
+    assert list(out.index[:2]) == ["SPIKE", "UP"]                     # ranked by 63-day return
+    assert out.loc["UP", "fund"] == "UPX" and out.loc["UP", "weight"] == 0.5
+    assert out.loc["SPIKE", "weight"] == 0                            # top 2 but below its 200-day
+    assert out.loc["cash", "weight"] == 0.5
+    no_trend = lv.signal(P, top=2, lookback=63, trend=False)
+    assert no_trend.loc["SPIKE", "weight"] == 0.5 and no_trend.loc["cash", "weight"] == 0
+
+
+def test_signal_matches_rotate_picks():
+    rng = np.random.default_rng(3)
+    P = pd.DataFrame(100 * np.exp(np.cumsum(rng.normal(0.0003, 0.01, (300, 4)), axis=0)),
+                     index=IDX, columns=list("ABCD"))
+    held = lv.signal(P.iloc[:-1], top=2, lookback=63, trend=False)   # picks at yesterday's close
+    picks = set(held.index[held["weight"] > 0]) - {"cash"}
+    rf = pd.Series(0.0, index=IDX)
+    lr = lv.rotate(P, 1, rf, top=2, lookback=63, every=1, switch_cost=0)[0]
+    assert np.isclose(lr.iloc[-1], P.pct_change().iloc[-1][sorted(picks)].mean())

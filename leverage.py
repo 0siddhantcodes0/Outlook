@@ -25,6 +25,7 @@ Run:
   python leverage.py swing --ticker SOXL --entry close --exit open --hold 3 --cost-bps 5
   python leverage.py hold --index SPY --leverage 2 --trend
   python leverage.py rotate --indexes SOXX QQQ XEG.TO XFN.TO GDX SPY --leverage 3 --top 2 --trend
+  python leverage.py signal --capital 20000
 """
 
 import argparse
@@ -40,6 +41,11 @@ import pandas as pd
 COST_PER_UNIT = {"XIU.TO": 0.0258, "SPY": 0.0456, "QQQ": 0.0459, "XEG.TO": 0.0159,
                  "XFN.TO": 0.0172, "XGD.TO": 0.0100, "SOXX": 0.0203}
 DEFAULT_COST = 0.0350     # used for indexes without a calibrated fund
+
+# Index each BetaPro 2x TSX-listed fund follows (the rotation ranks the
+# indexes, then holds the funds). The US-index ones are hedged to CAD.
+BETAPRO_2X = {"QQQ": "QQU", "SPY": "SPXU", "XEG.TO": "NRGU", "XFN.TO": "CFOU",
+              "XGD.TO": "GDXU", "XIU.TO": "CNDU"}
 TRADING_DAYS = 252
 
 
@@ -201,6 +207,31 @@ def rotate_all_days(index_prices, L, rf, every=21, **kw):
     return pd.DataFrame([stats(r[r.index >= start]) for r in runs])
 
 
+def signal(index_prices, top=2, lookback=63, trend=True, funds=None):
+    """Today's picks for the rotation: rank each index by its return over the
+    last `lookback` days, hold the `top` best, each at 1/top of the
+    leveraged sleeve, except a pick below its 200-day average, whose share
+    goes to cash (trend=True). Uses the latest close in index_prices, the
+    same information rotate() trades on. Returns one row per index, best
+    first, plus the cash share as a final row."""
+    P = index_prices.dropna()
+    mom = P.iloc[-1] / P.iloc[-1 - lookback] - 1
+    ma = P.rolling(200).mean().iloc[-1]
+    t = pd.DataFrame({"fund": [(funds or {}).get(c, c) for c in P.columns],
+                      "momentum": mom, "vs_200d": P.iloc[-1] / ma - 1,
+                      "above_200d": P.iloc[-1] > ma}, index=P.columns)
+    t = t.sort_values("momentum", ascending=False)
+    t["rank"] = np.arange(1, len(t) + 1)
+    picked = t["rank"] <= top
+    t["weight"] = np.where(picked & (t["above_200d"] | (not trend)), 1.0 / top, 0.0)
+    t["action"] = np.where(t["weight"] > 0, "HOLD",
+                           np.where(picked, "CASH (below 200-day)", "-"))
+    cash = pd.DataFrame({"fund": ["cash"], "weight": [1.0 - t["weight"].sum()],
+                         "action": ["HOLD" if t["weight"].sum() < 1 else "-"]},
+                        index=["cash"])
+    return pd.concat([t, cash]).rename_axis("index")
+
+
 # ---------------------------------------------------------------- report
 def stats(r):
     eq = (1 + r).cumprod()
@@ -236,6 +267,15 @@ def main():
     s.add_argument("--trend-index", help="only enter when this index is above its 200-day average")
     s.add_argument("--start", default="2010-01-01")
 
+    g = sub.add_parser("signal", help="this month's picks for the 2x sector rotation")
+    g.add_argument("--indexes", nargs="+", default=list(BETAPRO_2X))
+    g.add_argument("--top", type=int, default=2)
+    g.add_argument("--lookback", type=int, default=63)
+    g.add_argument("--no-trend", action="store_true", help="ignore the 200-day rule")
+    g.add_argument("--capital", type=float, help="total portfolio value, to show amounts")
+    g.add_argument("--satellite", type=float, default=0.25,
+                   help="share of the portfolio in the leveraged sleeve (default 0.25)")
+
     r = sub.add_parser("rotate", help="hold the top K hot sectors at L x")
     r.add_argument("--indexes", nargs="+", default=["SOXX", "QQQ", "XEG.TO", "XFN.TO", "GDX", "SPY"])
     r.add_argument("--leverage", type=int, default=3)
@@ -268,8 +308,30 @@ def main():
         show({"Buy & hold": d["Close"].pct_change().fillna(0.0),
               f"Swing: buy {a.entry}, sell {a.exit}, {a.hold} days": sw})
 
+    elif a.mode == "signal":
+        start = str(pd.Timestamp.today() - pd.DateOffset(years=2))[:10]
+        P = pd.concat({t: load(t, start) for t in a.indexes}, axis=1, sort=True).dropna()
+        t = signal(P, a.top, a.lookback, not a.no_trend, BETAPRO_2X)
+        last = P.index[-1]
+        print(f"As of the {last.date()} close. Rank by {a.lookback}-day return, hold the top "
+              f"{a.top}{', each only if above its 200-day average' if not a.no_trend else ''}.")
+        age = (pd.Timestamp.today().normalize() - last).days
+        if age > 4:
+            print(f"WARNING: latest price is {age} days old; check the data before trading.")
+        view = t.copy()
+        for c in ("momentum", "vs_200d"):
+            view[c] = view[c].map(lambda v: "" if pd.isna(v) else f"{v:+.1%}")
+        view["weight"] = view["weight"].map(lambda v: f"{v:.0%}")
+        view["rank"] = view["rank"].map(lambda v: "" if pd.isna(v) else f"{v:.0f}")
+        if a.capital:
+            view["amount"] = (t["weight"] * a.capital * a.satellite).map(lambda v: f"${v:,.0f}")
+        print(view.drop(columns=["above_200d"]).fillna("").to_string())
+        print(f"\nWeights are shares of the leveraged sleeve ({a.satellite:.0%} of the portfolio); "
+              f"the other {1 - a.satellite:.0%} stays in a plain 1x index fund. The rule trades "
+              "once a month, on the last trading day, in the last hour.")
+
     else:
-        P = pd.concat({t: load(t, a.start) for t in a.indexes}, axis=1).dropna()
+        P = pd.concat({t: load(t, a.start) for t in a.indexes}, axis=1, sort=True).dropna()
         rf = tbill(P.index, a.start)
         rot, turn = rotate(P, a.leverage, rf, a.top, a.lookback, a.every, a.trend)
         print(f"{P.index[0].date()} to {P.index[-1].date()}, turnover {turn:.1f}x per year")
