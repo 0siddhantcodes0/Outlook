@@ -205,3 +205,60 @@ that differ most from the market, RSST's trend stack and the small-cap value
 and emerging-markets value funds, have no Canadian-listed equivalent.
 Adjusted prices add dividends back in full, so the 15% US withholding tax
 that applies outside an RRSP is not deducted.
+
+## Leverage playbook for a Canadian account (`playbook.py`)
+
+This is a rules-based plan for TSX-listed BetaPro funds, priced in CAD and
+tradeable commission-free on Wealthsimple. It uses two engines, which make
+money at different times.
+
+| Engine | Rule | Holds |
+|---|---|---|
+| **Ladder** | Cash whenever the index closes below its 200-day average. Above it: tier = floor(25% ÷ 20-day volatility), from 1x up to the highest version available. Rechecked on Fridays; a break below the 200-day average acts the same day | Nasdaq: TQQQ.TO / QQU / XQQ / CASH.TO · S&P: TSPX / SPXU / XSP · Semis: BetaPro SOXL / XCHP · Energy: NRGU / XEG |
+| **Dip** | Brandon's RSI 6–10 rules on 3x Nasdaq. Five sleeves; each buys at the close when its RSI is at or below 28, and sells at the close once it's back above 28 | TQQQ.TO, otherwise CASH.TO |
+
+| Preset | Weights | Aug 2002 – Oct 2026 (simulated) | Worst drop | Losing years |
+|---|---|---|---|---|
+| `aggressive` | 50% Nasdaq ladder, 50% dip | 17.3%/yr | −20% | 2 of 25 |
+| `diversified` | 40% Nasdaq ladder, 30% dip, 15% semis ladder, 15% energy ladder | 15.7%/yr | −16% | 2 of 25 |
+| Nasdaq 1x, hold | | 15.8%/yr | −54% | 3 of 25 |
+| 3x Nasdaq, hold | | about 19.6%/yr | −95% | |
+
+Simulated funds use yearly costs fitted to the real BetaPro 2x funds
+(2010–2026), plus 0.1% per trade. With an extra 2% per unit of leverage,
+which is roughly today's CAD hedging cost, `aggressive` made 16.8%/yr.
+
+**The dip engine depends on buying at the close of the signal day.** Buying
+one close later cut its return from about 27% to about 6% a year. RSI dip
+rules also failed on the TSX 60 and on energy, so the dip engine trades only
+3x Nasdaq.
+
+```bash
+python playbook.py report                                   # what to hold now
+python playbook.py report --capital 20000                   # first buys for a new account
+python playbook.py report --holdings holdings.csv --cash 500 --preset diversified
+python playbook.py backtest --preset aggressive --extra-cost 0.02
+```
+
+**Holdings file.** Columns are `ticker,shares,avg_cost`, for example
+`TQQQ.TO,100,30.00`. Name it `holdings*.csv`, which `.gitignore` keeps out of
+this public repository, or put its contents in the `HOLDINGS_CSV`
+environment variable.
+
+### Daily Telegram report
+
+1. In Telegram, message **@BotFather**, send `/newbot` and follow the steps.
+   Copy the token it gives you.
+2. Send any message to your new bot. Then open
+   `https://api.telegram.org/bot<TOKEN>/getUpdates` and copy the `chat` → `id` number.
+3. Test it from your computer:
+   `TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... python playbook.py report --telegram`
+4. To have GitHub send it automatically each trading day in the 3 PM hour:
+   - In the repository settings, add the secrets `TELEGRAM_BOT_TOKEN`,
+     `TELEGRAM_CHAT_ID` and optionally `HOLDINGS_CSV`.
+   - Add the variable `PLAYBOOK_ENABLED` = `true`, and optionally
+     `PLAYBOOK_PRESET`.
+   - Use **Actions → playbook-report → Run workflow** to test it.
+
+   GitHub can start scheduled runs 5–15 minutes late. Treat the message as a
+   reminder, and confirm any dip signal shortly before 4:00 PM ET.
