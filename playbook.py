@@ -94,9 +94,19 @@ def load(tickers, start="1999-01-01"):
     """Daily adjusted closes from Yahoo. During market hours the last row is
     today's bar at the latest price, which is what the 3:45 PM check needs."""
     import yfinance as yf
-    raw = yf.download(sorted(set(tickers)), start=start, auto_adjust=True, progress=False)["Close"]
-    if isinstance(raw, pd.Series):
-        raw = raw.to_frame(tickers[0])
+    tickers = sorted(set(tickers))
+
+    def get(names, **kw):
+        out = yf.download(names, start=start, auto_adjust=True, progress=False, **kw)["Close"]
+        return out.to_frame(names[0]) if isinstance(out, pd.Series) else out
+
+    raw = get(tickers)
+    # A parallel download can drop a ticker (yfinance's cache answers
+    # "database is locked" on a fresh machine); fetch those again one by one.
+    missing = [t for t in tickers if t not in raw or raw[t].isna().all()]
+    if missing:
+        again = get(missing, threads=False)
+        raw = pd.concat([raw.drop(columns=[t for t in missing if t in raw]), again], axis=1)
     return raw.sort_index()
 
 
