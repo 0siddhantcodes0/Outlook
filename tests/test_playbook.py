@@ -123,3 +123,21 @@ def test_price_board_moves_tags_and_stale_prices():
     assert "★40%" in row["XQQ.TO"]
     assert "(last trade" in row["XQQ.TO"] and "+0.0%" in row["XQQ.TO"]
     assert row["TQQQ.TO"].endswith("no price")
+
+
+def test_load_refetches_tickers_a_batch_dropped(monkeypatch):
+    idx = pd.bdate_range("2026-01-01", periods=5)
+    calls = []
+
+    def fake_download(names, threads=True, **kw):
+        calls.append((list(names), threads))
+        close = pd.DataFrame({n: 1.0 for n in names}, index=idx)
+        if threads:
+            close["SOXL"] = np.nan                     # dropped in the parallel batch
+        return pd.concat({"Close": close}, axis=1)
+
+    monkeypatch.setitem(sys.modules, "yfinance", type(sys)("yfinance"))
+    monkeypatch.setattr(sys.modules["yfinance"], "download", fake_download, raising=False)
+    P = pb.load(["QQQ", "SOXL"])
+    assert calls == [(["QQQ", "SOXL"], True), (["SOXL"], False)]
+    assert P["SOXL"].notna().all() and list(P.columns).count("SOXL") == 1
