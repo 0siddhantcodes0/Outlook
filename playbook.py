@@ -23,6 +23,10 @@ The dip engine only works when you buy at (or within minutes of) the close of
 the day the signal appears: buying a day late cut its return from 27% to about
 6% a year. Run the report in the last half hour of trading.
 
+Each report ends with a price board of the funds in WATCH. The bear and
+commodity funds there are watch-only: on their real prices they lost money,
+both held and as the "downtrend" side of a bull/bear switch (see WATCH_ONLY).
+
 Commands:
   python playbook.py report                         # what to hold now
   python playbook.py report --holdings my.csv       # plus P/L and trades to make
@@ -68,6 +72,21 @@ PRESETS = {
     "aggressive": {"nasdaq": 0.50, "dip": 0.50},
     "diversified": {"nasdaq": 0.40, "dip": 0.30, "semis": 0.15, "energy": 0.15},
 }
+
+# Price board in every report: the funds to watch, by group. Yahoo has no
+# prices for the TSX-listed SOXL/SOXS, so the board shows the US ones (USD).
+WATCH = [
+    ("Nasdaq", ["QQQ", "XQQ.TO", "TQQQ.TO"]),
+    ("Semis", ["SOXX", "XCHP.TO", "SOXL", "SOXS"]),
+    ("Energy", ["XEG.TO", "NRGU.TO"]),
+    ("Oil & gas", ["CL=F", "HOU.TO", "NG=F", "HNU.TO"]),
+    ("Volatility", ["^VIX", "VOLX.TO"]),
+]
+# Watched but never in the plan. Tested on the real funds' prices 2008-2026:
+# held, they lost 36% (HOU), 62% (HNU), 48% (VOLX) and 71% (SOXS) a year;
+# switching from SOXL to SOXS below the 200-day average turned +25.6%/yr
+# into -20.8%/yr (2022 included), and TQQQ to SQQQ turned 32.2% into 5.0%.
+WATCH_ONLY = {"SOXS", "HOU.TO", "NG=F", "HNU.TO", "CL=F", "^VIX", "VOLX.TO"}
 
 
 # ---------------------------------------------------------------- data
@@ -276,10 +295,51 @@ def trades(holdings, prices, targets, cash=0.0):
     return out, total
 
 
-def render(rows, P, preset, holdings=None, cash=0.0, capital=None):
+def phase(now):
+    """Which update this is, from the Toronto time."""
+    if now.dayofweek >= 5 or now.hour < 9 or now.hour >= 16:
+        return "MARKET CLOSED"
+    return "MARKET OPEN update" if now.hour < 12 else "CLOSE update"
+
+
+def watch_lines(P, targets=None):
+    """One line per watched fund: price, change on its last trading day and
+    over 5 trading days, above/below its 200-day average, and its weight in
+    today's plan. P holds raw (not forward-filled) closes."""
+    targets = targets or {}
+    series = {t: P[t].dropna() for g in WATCH for t in g[1] if t in P and P[t].notna().sum() > 5}
+    if not series:
+        return []
+    # newest trading day on either stock market (futures also trade on Sundays)
+    latest = max(s.index[-1] for t, s in series.items() if not t.endswith("=F"))
+    lines = ["PRICE BOARD: price, today, 5 days, vs 200-day avg (\u25b2 above / \u25bc below)"]
+    for group, tickers in WATCH:
+        lines.append(f" {group}")
+        for t in tickers:
+            if t not in series:
+                lines.append(f"   {t:<8} no price")
+                continue
+            s = series[t]
+            up = s.iloc[-1] > s.iloc[-200:].mean() if len(s) >= 200 else None
+            note = "" if s.index[-1] >= latest else f" (last trade {s.index[-1]:%a})"
+            w = sum(v for k, v in targets.items() if k.split(" ")[0] == t)
+            tag = f" \u2605{w:.0%}" if w > 0 else (" watch" if t in WATCH_ONLY else "")
+            usd = "" if t.endswith(".TO") or t.startswith("^") else " US$"
+            arrow = "" if up is None else (" \u25b2" if up else " \u25bc")
+            lines.append(f"   {t:<8}{s.iloc[-1]:>8.2f}{usd} {s.iloc[-1] / s.iloc[-2] - 1:+.1%}"
+                         f"  5d {s.iloc[-1] / s.iloc[-6] - 1:+.1%}{arrow}{tag}{note}")
+    lines.append(" \u2605 = in today's plan. 'watch' funds are not signals: tested 2008-26 they lost "
+                 "money held, and swapping into SOXS/SQQQ in downtrends did worse than cash.")
+    return lines
+
+
+def render(rows, P, preset, holdings=None, cash=0.0, capital=None, board=None):
     now = pd.Timestamp.now(tz="America/Toronto")
     last = P.dropna(how="all").index[-1].date()
-    lines = [f"LEVERAGE PLAYBOOK ({preset}) - {now:%a %d %b %Y %H:%M} ET, prices to {last}", ""]
+    lines = [f"{phase(now)} - LEVERAGE PLAYBOOK ({preset})",
+             f"{now:%a %d %b %Y %H:%M} ET, prices to {last}", ""]
+    if phase(now) == "MARKET OPEN update":
+        lines += ["Morning numbers are provisional: the plan acts on prices near 4:00 PM.", ""]
     for r in rows:
         held = ", ".join(f"{t} {w:.0%}" for t, w in r["hold"].items() if w > 0)
         lines.append(f"{r['engine']} [{r['weight']:.0%}]: {r['summary']} -> {held}")
@@ -310,6 +370,8 @@ def render(rows, P, preset, holdings=None, cash=0.0, capital=None):
         for t in todo:
             sh = f"{t['shares']:.0f} shares" if t["shares"] is not None else "check price"
             lines.append(f"   {t['action']:4s} {t['ticker']:9s} ${t['amount']:>9,.0f}  (~{sh})")
+    if board is not None:
+        lines += [""] + watch_lines(board, targets)
     lines += ["", "Dip trades: buy/sell in the last 10 minutes before 4:00 PM ET. "
               "Ladder changes: Fridays, or any day the index closes below its 200-day."]
     return "\n".join(lines)
@@ -356,8 +418,11 @@ def main():
         tradeable |= {DIP["fund"], DIP["cash"]} | set(holdings["ticker"])
         tradeable = {t for t in tradeable if t.endswith(".TO") and " " not in t}
         start = str(pd.Timestamp.today() - pd.DateOffset(years=2))[:10]
-        P = load(sorted(rows_needed | tradeable), start).ffill(limit=5)
-        text = render(plan_today(P, weights), P, a.preset, holdings, a.cash, a.capital)
+        plan_cols = sorted(rows_needed | tradeable)
+        raw = load(plan_cols + [t for g in WATCH for t in g[1]], start)
+        # futures trade on Sundays; keep those rows out of the plan's daily data
+        P = raw[[c for c in plan_cols if c in raw]].dropna(how="all").ffill(limit=5)
+        text = render(plan_today(P, weights), P, a.preset, holdings, a.cash, a.capital, board=raw)
         print(text)
         if a.telegram:
             print("\nTelegram:", "sent" if telegram_send(text) else "failed")

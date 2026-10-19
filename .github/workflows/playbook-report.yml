@@ -1,16 +1,18 @@
-# Sends the leverage playbook report to Telegram in the last hour of trading.
-# Runs at 19:35 and 20:35 UTC on weekdays; the script only sends when it is
-# the 3 PM hour in Toronto, so one of the two runs fits whether or not
-# daylight saving is on. GitHub can start scheduled runs late (often 5-15
-# minutes), so treat this as a reminder and confirm signals near 4 PM.
+# Sends the leverage playbook report to Telegram.
+#
+# There is no schedule here: in October 2026 GitHub started this job's
+# scheduled runs 2.5-6 hours late, after the market had closed. Instead an
+# outside clock (a Claude routine) starts it through the API at about
+# 9:45 AM and 3:33 PM Toronto time on weekdays:
+#   POST /repos/{owner}/{repo}/actions/workflows/playbook-report.yml/dispatches
+#   {"ref": "main"}
+# Runs started that way begin within seconds. Actions -> Run workflow works too.
 #
 # Repository secrets: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, and optionally
-# HOLDINGS_CSV (contents of your holdings file) and PLAYBOOK_PRESET.
+# HOLDINGS_CSV (contents of your holdings file). Variables: PLAYBOOK_ENABLED
+# (true) and optionally PLAYBOOK_PRESET.
 name: playbook-report
 on:
-  schedule:
-    - cron: "35 19 * * 1-5"
-    - cron: "35 20 * * 1-5"
   workflow_dispatch:
 jobs:
   report:
@@ -22,8 +24,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install yfinance pandas numpy
-      # manual runs (workflow_dispatch) send straight away, for testing the setup
-      - run: python playbook.py report --telegram ${{ github.event_name == 'schedule' && '--near-close-only' || '' }} --preset "${PRESET:-aggressive}"
+      - run: python playbook.py report --telegram --preset "${PRESET:-aggressive}"
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
