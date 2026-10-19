@@ -101,3 +101,25 @@ def test_telegram_posts_message(monkeypatch):
 def test_presets_sum_to_one():
     for w in pb.PRESETS.values():
         assert np.isclose(sum(w.values()), 1)
+
+
+def test_phase_labels_follow_toronto_clock():
+    at = lambda s: pd.Timestamp(s, tz="America/Toronto")
+    assert pb.phase(at("2026-10-19 09:45")) == "MARKET OPEN update"      # Monday
+    assert pb.phase(at("2026-10-19 15:33")) == "CLOSE update"
+    assert pb.phase(at("2026-10-18 15:33")) == "MARKET CLOSED"           # Sunday
+
+
+def test_price_board_moves_tags_and_stale_prices():
+    idx = pd.bdate_range("2025-01-01", periods=260)
+    P = pd.DataFrame({"QQQ": 100 * 1.001 ** np.arange(260),               # steady riser
+                      "SOXS": 100 * 0.995 ** np.arange(260),              # steady decliner
+                      "XQQ.TO": 50.0}, index=idx)
+    P.iloc[-1, P.columns.get_loc("XQQ.TO")] = np.nan                      # no trade yet today
+    lines = pb.watch_lines(P, {"XQQ.TO": 0.4, "CASH.TO": 0.6})
+    row = {ln.split()[0]: ln for ln in lines if ln.startswith("   ")}
+    assert "US$ +0.1%  5d +0.5% ▲" in row["QQQ"]
+    assert row["SOXS"].endswith("▼ watch")
+    assert "★40%" in row["XQQ.TO"]
+    assert "(last trade" in row["XQQ.TO"] and "+0.0%" in row["XQQ.TO"]
+    assert row["TQQQ.TO"].endswith("no price")

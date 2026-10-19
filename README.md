@@ -253,12 +253,46 @@ environment variable.
    `https://api.telegram.org/bot<TOKEN>/getUpdates` and copy the `chat` → `id` number.
 3. Test it from your computer:
    `TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... python playbook.py report --telegram`
-4. To have GitHub send it automatically each trading day in the 3 PM hour:
+4. To send it from GitHub:
    - In the repository settings, add the secrets `TELEGRAM_BOT_TOKEN`,
      `TELEGRAM_CHAT_ID` and optionally `HOLDINGS_CSV`.
    - Add the variable `PLAYBOOK_ENABLED` = `true`, and optionally
      `PLAYBOOK_PRESET`.
    - Use **Actions → playbook-report → Run workflow** to test it.
+5. Start the workflow on a schedule from outside GitHub. GitHub's own
+   scheduler started this job 2½ to 6 hours late in October 2026, after the
+   close, so the workflow has no schedule of its own. Instead, something
+   that keeps time calls GitHub's API at about 9:45 AM and 3:33 PM Toronto
+   time on weekdays. Here that is a Claude routine; a cron job with a token
+   that can run workflows works too:
+   `POST /repos/<owner>/<repo>/actions/workflows/playbook-report.yml/dispatches`
+   with body `{"ref": "main"}`. Started this way, the run begins within
+   seconds.
 
-   GitHub can start scheduled runs 5–15 minutes late. Treat the message as a
-   reminder, and confirm any dip signal shortly before 4:00 PM ET.
+The message starts with **MARKET OPEN update** or **CLOSE update**. Morning
+numbers are provisional, because the plan acts on prices near 4:00 PM.
+
+**Price board.** Each report ends with a board of the funds to watch: price,
+today's change, the change over 5 trading days, and whether the fund is above
+(▲) or below (▼) its own 200-day average. ★ marks a fund in today's plan,
+with its weight. The groups are Nasdaq (QQQ, XQQ, TQQQ.TO), semis (SOXX,
+XCHP, SOXL, SOXS), energy (XEG, NRGU), oil and gas (crude, HOU, natural gas,
+HNU) and volatility (VIX, VOLX). Yahoo has no prices for the TSX-listed
+SOXL/SOXS, so the board shows the US funds, in USD.
+
+Funds marked **watch** are on the board for their price action only. They
+are never signals, because on the real funds' prices they lost money:
+
+| Real fund prices, 2008–2026 | Per year |
+|---|---|
+| Hold HOU (2x crude oil) | −35.7% |
+| Hold HNU (2x natural gas) | −61.9% |
+| Hold VOLX (VIX futures) | −47.7% |
+| SOXL above SOXX's 200-day average, cash below | +25.6% |
+| Same, but SOXS instead of cash below (2010–2026) | −20.8% |
+| TQQQ above QQQ's 200-day average, cash below | +32.2% |
+| Same, but SQQQ instead of cash below | +5.0% |
+
+Even in 2022, when semis fell all year, holding SOXS through the downtrend
+did worse than cash (−89% vs −72%). Sharp rallies inside bear markets wreck
+3x inverse funds, so the plan holds cash when the trend is down.
