@@ -10,7 +10,7 @@
 #
 # Repository secrets: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, and optionally
 # HOLDINGS_CSV (contents of your holdings file). Variables: PLAYBOOK_ENABLED
-# (true) and optionally PLAYBOOK_PRESET.
+# (true) and optionally PLAYBOOK_PRESET and PLAYBOOK_ALSO (a preset to preview, or none).
 name: playbook-report
 on:
   workflow_dispatch:
@@ -24,9 +24,14 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install yfinance pandas numpy
-      - run: python playbook.py report --telegram --preset "${PRESET:-aggressive}"
+      # ALSO adds a short preview of a second preset (default design-f; "none" turns it off)
+      - run: |
+          extra=""
+          if [ "$ALSO" != "none" ] && [ "$ALSO" != "${PRESET:-aggressive}" ]; then extra="--also $ALSO"; fi
+          python playbook.py report --telegram --preset "${PRESET:-aggressive}" $extra
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           HOLDINGS_CSV: ${{ secrets.HOLDINGS_CSV }}
           PRESET: ${{ vars.PLAYBOOK_PRESET }}
+          ALSO: ${{ vars.PLAYBOOK_ALSO || 'design-f' }}

@@ -17,7 +17,15 @@ simulated funds whose costs are fitted to the real BetaPro funds:
   aggressive   50% Nasdaq ladder, 50% Nasdaq dip       17.3%/yr, worst drop -20%
   diversified  40% Nasdaq ladder, 30% Nasdaq dip,
                15% semis ladder, 15% energy ladder     15.7%/yr, worst drop -16%
+  design-f     50% QLD V1.1, 50% Nasdaq dip       40.2%/yr, worst drop -34%
+               (from 2000, through the whole dot-com crash: 44.9%/yr, worst drop
+               -47%, on US funds; see lab.py)
 Holding a 1x Nasdaq fund over the same years: 15.8%/yr, worst drop -54%.
+
+QLD V1.1 ("QLD For The Long Term", a Composer.trade symphony) holds one fund at a time:
+2x Nasdaq while SPY is above its 200-day average, long bonds when QLD is overheated,
+and dip buys, 2x short Nasdaq or short-term bonds when SPY is below it. Its signals read
+the US funds (QLD, QID, SSO, TLT, SHY, BSV); you buy the TSX fund that tracks each one.
 
 The dip engine only works when you buy at (or within minutes of) the close of
 the day the signal appears: buying a day late cut its return from 27% to about
@@ -32,6 +40,7 @@ Commands:
   python playbook.py report --holdings my.csv       # plus P/L and trades to make
   python playbook.py report --telegram              # also send it to Telegram
   python playbook.py backtest --preset aggressive
+  python playbook.py report --preset diversified --also design-f   # plus a Design F preview
 
 Holdings file (keep it out of git; holdings*.csv is ignored): ticker,shares,avg_cost
 Telegram: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID (see README).
@@ -68,15 +77,24 @@ MARKETS = {
 }
 DIP = {"name": "Nasdaq dip (RSI 6-10)", "signal": "TQQQ", "fund": "TQQQ.TO", "cash": "CASH.TO"}
 
+# QLD For The Long Term V1.1 (Composer symphony k2fx2fSEydTaAzW4YkiY). Signals read the
+# US-listed funds; each pick is bought as the TSX fund that tracks it (daily corr 0.99+).
+QLD_V11 = {"name": "QLD V1.1", "signals": ["SPY", "QQQ", "QLD", "SHY", "SSO", "QID", "BSV"],
+           "funds": {"QLD": "QQU.TO", "QID": "QQD.TO", "SSO": "SPXU.TO", "TLT": "XTLH.TO",
+                     "SHY": "CASH.TO", "BSV": "CASH.TO"}}
+
 PRESETS = {
     "aggressive": {"nasdaq": 0.50, "dip": 0.50},
     "diversified": {"nasdaq": 0.40, "dip": 0.30, "semis": 0.15, "energy": 0.15},
+    # QLD V1.1 and the dip engine make money at different times (daily corr 0.43).
+    # 2000-2026 on simulated funds: 44.9%/yr, worst drop -47%; one day late: 13.8%/yr.
+    "design-f": {"qld": 0.50, "dip": 0.50},
 }
 
 # Price board in every report: the funds to watch, by group. Yahoo has no
 # prices for the TSX-listed SOXL/SOXS, so the board shows the US ones (USD).
 WATCH = [
-    ("Nasdaq", ["QQQ", "XQQ.TO", "TQQQ.TO"]),
+    ("Nasdaq", ["QQQ", "XQQ.TO", "QQU.TO", "TQQQ.TO"]),
     ("Semis", ["SOXX", "XCHP.TO", "SOXL", "SOXS"]),
     ("Energy", ["XEG.TO", "NRGU.TO"]),
     ("Oil & gas", ["CL=F", "HOU.TO", "NG=F", "HNU.TO"]),
@@ -152,6 +170,63 @@ def dip_signals(close, threshold=DIP_THRESHOLD, lengths=DIP_LENGTHS):
 
 
 # ---------------------------------------------------------------- backtest
+QLD_RSI = (("QLD", 10), ("QQQ", 10), ("SPY", 10), ("QLD", 12), ("SHY", 12), ("SSO", 12),
+           ("QID", 9), ("QID", 10), ("BSV", 10))
+
+
+def qld_v11_inputs(P, ma=MA, ma_short=20):
+    """Indicator columns QLD V1.1 reads, one row per day, from closes of its signal funds."""
+    X = pd.DataFrame({"spy": P["SPY"], "spy200": P["SPY"].rolling(ma).mean(),
+                      "qld": P["QLD"], "qld20": P["QLD"].rolling(ma_short).mean()})
+    for t, n in QLD_RSI:
+        X[f"{t}{n}"] = rsi(P[t].dropna(), n).reindex(P.index)
+    return X
+
+
+def qld_v11_pick(x, hot=79, qqq=30, spy=30, qid=31):
+    """(US ticker, rule) for one row of qld_v11_inputs. First matching rule wins;
+    all comparisons strict; rank ties go to the first ticker listed."""
+    if x["spy"] > x["spy200"]:
+        if x["QLD10"] > hot:
+            return "TLT", f"SPY above its 200-day, QLD RSI(10) > {hot}: overheated"
+        return "QLD", "SPY above its 200-day"
+    if x["QQQ10"] < qqq:
+        return ("QLD" if x["QLD12"] <= x["SHY12"] else "SHY"), f"QQQ RSI(10) < {qqq}: dip, lower RSI(12) of QLD/SHY"
+    if x["SPY10"] < spy:
+        return ("SSO" if x["SSO12"] <= x["SHY12"] else "SHY"), f"SPY RSI(10) < {spy}: dip, lower RSI(12) of SSO/SHY"
+    if x["qld"] > x["qld20"]:
+        if x["QID9"] < qid:
+            return "QID", f"QLD above its 20-day, QID RSI(9) < {qid}"
+        return "QLD", "QLD above its 20-day"
+    return ("QID" if x["QID10"] >= x["BSV10"] else "BSV"), "downtrend: higher RSI(10) of QID/BSV"
+
+
+def qld_v11_targets(P, ma=MA, ma_short=20, **thresholds):
+    """US ticker QLD V1.1 holds after each close (thresholds: hot, qqq, spy, qid)."""
+    X = qld_v11_inputs(P, ma, ma_short)
+    return pd.Series([qld_v11_pick(x, **thresholds)[0] for x in X.to_dict("records")], index=X.index)
+
+
+def qld_returns(P, rf, extra_cost=0.0, trade_cost=0.001):
+    """QLD V1.1 filled at the signal close, with the 2x funds simulated from QQQ and SPY at
+    BetaPro costs (so the test reaches back before QLD existed) and SHY/BSV held as cash."""
+    rf = rf.reindex(P.index).ffill().fillna(0)
+    q, s = P["QQQ"].pct_change(), P["SPY"].pct_change()
+    nas = (MARKETS["nasdaq"]["cost"] + extra_cost) / TRADING_DAYS
+    spx = (MARKETS["sp500"]["cost"] + extra_cost) / TRADING_DAYS
+    R = pd.DataFrame({"QLD": 2 * q - rf - nas, "QID": -2 * q + 3 * rf - nas, "SSO": 2 * s - rf - spx,
+                      "TLT": P["TLT"].pct_change(), "SHY": rf, "BSV": rf}).fillna(0)
+    bsv = P["BSV"].pct_change().combine_first(P["SHY"].pct_change())   # SHY stands in before 2007
+    sig = pd.DataFrame({"SPY": P["SPY"], "QQQ": P["QQQ"], "SHY": P["SHY"],
+                        "QLD": (1 + R["QLD"]).cumprod(), "QID": (1 + R["QID"]).cumprod(),
+                        "SSO": (1 + R["SSO"]).cumprod(), "BSV": (1 + bsv.fillna(0)).cumprod()})
+    held = qld_v11_targets(sig).where(P["SHY"].notna())
+    prev = held.shift(1)
+    r = sum((prev == t) * R[t] for t in R)
+    r = r - (held != prev).shift(1, fill_value=False) * 2 * trade_cost
+    return r[prev.notna()]
+
+
 def fund_returns(index_returns, rf, cost):
     """Daily returns of cash and the 1x, 2x, 3x versions of an index."""
     return {0: rf, 1: index_returns - ONE_X_FEE / TRADING_DAYS,
@@ -209,12 +284,16 @@ def stats(r):
 
 def backtest(preset, start="2002-08-01", extra_cost=0.0, trade_cost=0.001):
     weights = PRESETS[preset]
-    need = {MARKETS[k]["signal"] for k in weights if k != "dip"} | {"QQQ", "^IRX"}
+    need = {MARKETS[k]["signal"] for k in weights if k in MARKETS} | {"QQQ", "^IRX"}
+    if "qld" in weights:
+        need |= {"SPY", "TLT", "SHY", "BSV"}
     P = load(sorted(need), "1999-01-01")
     rf = P["^IRX"].ffill() / 100 / TRADING_DAYS
     parts = {}
     for k in weights:
-        if k == "dip":   # simulated 3x Nasdaq, so the test reaches back before TQQQ existed
+        if k == "qld":
+            parts[k] = qld_returns(P.dropna(subset=["SPY", "QQQ"]), rf, extra_cost, trade_cost)
+        elif k == "dip":   # simulated 3x Nasdaq, so the test reaches back before TQQQ existed
             q = P["QQQ"].dropna()
             f3 = fund_returns(q.pct_change(), rf.reindex(q.index).ffill().fillna(0),
                               MARKETS["nasdaq"]["cost"] + extra_cost)[3].dropna()
@@ -256,6 +335,26 @@ def plan_today(P, weights):
             rows.append({"engine": DIP["name"], "key": k, "weight": w, "hold": {
                 DIP["fund"]: w * on / 5, DIP["cash"]: w * (5 - on) / 5},
                 "summary": f"{on}/5 sleeves in", "reason": reason})
+        elif k == "qld":
+            x = qld_v11_inputs(P[QLD_V11["signals"]].dropna(how="all")).iloc[-1]
+            pick, rule = qld_v11_pick(x)
+            gap = x["spy"] / x["spy200"] - 1
+            reason = f"SPY {gap:+.1%} vs 200-day, QLD RSI(10) {x['QLD10']:.0f}"
+            if gap > 0 and pick == "QLD":
+                reason += " (TLT above 79)"
+            else:
+                reason += f"; {rule}"
+            if pick in ("QID", "QLD") and gap <= 0:
+                reason += f", QID RSI(9) {x['QID9']:.0f}"
+            close = []
+            if abs(gap) < 0.01:
+                close.append("SPY within 1% of its 200-day")
+            if abs(x["QLD10"] - 79) < 3 and gap > 0:
+                close.append("QLD RSI(10) near 79")
+            if close:
+                reason += f" ({' and '.join(close)}: recheck at the close)"
+            rows.append({"engine": QLD_V11["name"], "key": k, "weight": w,
+                         "hold": {QLD_V11["funds"][pick]: w}, "summary": pick, "reason": reason})
         else:
             m = MARKETS[k]
             p = P[m["signal"]].dropna()
@@ -343,7 +442,22 @@ def watch_lines(P, targets=None):
     return lines
 
 
-def render(rows, P, preset, holdings=None, cash=0.0, capital=None, board=None):
+def preview_lines(name, rows, shown):
+    """A second preset's plan, short: engines already shown above get one line."""
+    lines = [f"{name.replace('-', ' ').upper()} PREVIEW (not your plan yet)"]
+    for r in rows:
+        held = ", ".join(f"{t} {w:.0%}" for t, w in r["hold"].items() if w > 0)
+        if r["key"] in shown:
+            lines.append(f"{r['engine']} [{r['weight']:.0%}]: same signal as above -> {held}")
+        else:
+            lines.append(f"{r['engine']} [{r['weight']:.0%}]: {r['summary']} -> {held}")
+            lines.append(f"   {r['reason']}")
+    total = sorted(target_holdings(rows).items(), key=lambda kv: -kv[1])
+    lines.append("   Would hold: " + ", ".join(f"{t} {w:.0%}" for t, w in total if w > 0))
+    return lines
+
+
+def render(rows, P, preset, holdings=None, cash=0.0, capital=None, board=None, also=None):
     now = pd.Timestamp.now(tz="America/Toronto")
     last = P.dropna(how="all").index[-1].date()
     lines = [f"{phase(now)} - LEVERAGE PLAYBOOK ({preset})",
@@ -354,6 +468,8 @@ def render(rows, P, preset, holdings=None, cash=0.0, capital=None, board=None):
         held = ", ".join(f"{t} {w:.0%}" for t, w in r["hold"].items() if w > 0)
         lines.append(f"{r['engine']} [{r['weight']:.0%}]: {r['summary']} -> {held}")
         lines.append(f"   {r['reason']}")
+    if also:
+        lines += [""] + preview_lines(also[0], also[1], {r["key"] for r in rows})
     targets = target_holdings(rows)
     prices = {t: P[t].dropna().iloc[-1] for t in P.columns if P[t].notna().any()}
     if holdings is not None and len(holdings):
@@ -397,6 +513,19 @@ def telegram_send(text, token=None, chat_id=None):
         return json.load(r).get("ok", False)
 
 
+def engine_tickers(weights):
+    """(signal tickers, funds bought) for a set of engines."""
+    signals, funds = set(), set()
+    for k in weights:
+        if k == "dip":
+            signals.add(DIP["signal"]); funds |= {DIP["fund"], DIP["cash"]}
+        elif k == "qld":
+            signals |= set(QLD_V11["signals"]); funds |= set(QLD_V11["funds"].values())
+        else:
+            signals.add(MARKETS[k]["signal"]); funds |= set(MARKETS[k]["tiers"].values())
+    return signals, funds
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="mode", required=True)
@@ -405,6 +534,7 @@ def main():
     r.add_argument("--holdings", help="CSV: ticker,shares,avg_cost (or set HOLDINGS_CSV)")
     r.add_argument("--cash", type=float, default=0.0, help="uninvested cash in the account")
     r.add_argument("--capital", type=float, help="no holdings yet: plan trades for this amount")
+    r.add_argument("--also", choices=list(PRESETS), help="add a short preview of another preset")
     r.add_argument("--telegram", action="store_true")
     r.add_argument("--near-close-only", action="store_true",
                    help="do nothing unless it is 3:00-3:59 PM in Toronto on a weekday "
@@ -422,17 +552,19 @@ def main():
             print(f"{now:%a %H:%M} in Toronto: outside the 3 PM hour, nothing sent.")
             return
         weights = PRESETS[a.preset]
-        rows_needed = {MARKETS[k]["signal"] for k in weights if k != "dip"} | {DIP["signal"]}
+        also = PRESETS[a.also] if a.also and a.also != a.preset else {}
         holdings = read_holdings(a.holdings)
-        tradeable = {t for k in weights if k != "dip" for t in MARKETS[k]["tiers"].values()}
-        tradeable |= {DIP["fund"], DIP["cash"]} | set(holdings["ticker"])
+        rows_needed, tradeable = engine_tickers({**weights, **also})
+        tradeable |= set(holdings["ticker"])
         tradeable = {t for t in tradeable if t.endswith(".TO") and " " not in t}
         start = str(pd.Timestamp.today() - pd.DateOffset(years=2))[:10]
         plan_cols = sorted(rows_needed | tradeable)
         raw = load(plan_cols + [t for g in WATCH for t in g[1]], start)
         # futures trade on Sundays; keep those rows out of the plan's daily data
         P = raw[[c for c in plan_cols if c in raw]].dropna(how="all").ffill(limit=5)
-        text = render(plan_today(P, weights), P, a.preset, holdings, a.cash, a.capital, board=raw)
+        preview = (a.also, plan_today(P, also)) if also else None
+        text = render(plan_today(P, weights), P, a.preset, holdings, a.cash, a.capital,
+                      board=raw, also=preview)
         print(text)
         if a.telegram:
             print("\nTelegram:", "sent" if telegram_send(text) else "failed")

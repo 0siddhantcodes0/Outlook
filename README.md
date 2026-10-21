@@ -221,6 +221,7 @@ money at different times.
 |---|---|---|---|---|
 | `aggressive` | 50% Nasdaq ladder, 50% dip | 17.3%/yr | −20% | 2 of 25 |
 | `diversified` | 40% Nasdaq ladder, 30% dip, 15% semis ladder, 15% energy ladder | 15.7%/yr | −16% | 2 of 25 |
+| `design-f` | 50% QLD V1.1, 50% dip | 40.2%/yr | −34% | 4 of 25 |
 | Nasdaq 1x, hold | | 15.8%/yr | −54% | 3 of 25 |
 | 3x Nasdaq, hold | | about 19.6%/yr | −95% | |
 
@@ -296,3 +297,72 @@ are never signals, because on the real funds' prices they lost money:
 Even in 2022, when semis fell all year, holding SOXS through the downtrend
 did worse than cash (−89% vs −72%). Sharp rallies inside bear markets wreck
 3x inverse funds, so the plan holds cash when the trend is down.
+
+### Design F: QLD V1.1 plus the dip engine
+
+`design-f` puts half the account in **QLD V1.1** and half in the RSI dip engine. QLD V1.1 is
+"QLD For The Long Term V1.1", Composer symphony `k2fx2fSEydTaAzW4YkiY`. It holds one fund at
+a time, and the first matching rule wins:
+
+```
+if SPY > its 200-day average:  TLT if RSI(QLD,10) > 79, else QLD
+elif RSI(QQQ,10) < 30:         QLD or SHY, whichever has the lower RSI(12)
+elif RSI(SPY,10) < 30:         SSO or SHY, whichever has the lower RSI(12)
+elif QLD > its 20-day average: QID if RSI(QID,9) < 31, else QLD
+else:                          QID or BSV, whichever has the higher RSI(10)
+```
+
+Signals read the US funds. The report names the TSX fund to buy for each one:
+
+| Signal | Buy | Daily corr. with the US fund |
+|---|---|---|
+| QLD (2x Nasdaq) | QQU.TO | 1.00 |
+| QID (2x short Nasdaq) | QQD.TO | 1.00 |
+| SSO (2x S&P 500) | SPXU.TO | 1.00 |
+| TLT (US long bonds) | XTLH.TO | 0.99 |
+| SHY / BSV | CASH.TO | |
+
+The bot's QLD V1.1 picks matched the symphony's own signal history on all 597 days
+checked (June 2024 to October 2026). The two halves make money at different times (daily
+correlation 0.43). That's why the blend's worst drop is much smaller than QLD V1.1's own.
+
+| 2000–2026, US funds, same-close fills | Per year | Worst drop | One day late |
+|---|---|---|---|
+| QLD V1.1 alone | 58.1% | −82% | 15.4% |
+| `design-f` | 44.9% | −47% | 13.8% |
+| `diversified` | 16.1% | −27% | 10.8% |
+
+Like the dip engine, QLD V1.1 needs trades done before 4:00 PM on the signal day. It also
+switches about 21 times a year. In a TFSA, trading that often can lead the CRA to tax the
+account as a business, so an RRSP is the safer place for it.
+
+By default, the Telegram workflow adds a short **Design F preview** to each report until
+you make it your plan. Set the repository variable `PLAYBOOK_PRESET` to `design-f` to switch,
+or set `PLAYBOOK_ALSO` to `none` to drop the preview.
+
+## Strategy lab (`lab.py`)
+
+Rebuilds the Composer strategies in the Azqato and Composer Atlas guides and tests them, with
+these presets, on the years they weren't tuned on. Before each leveraged fund existed, its
+returns are simulated from its index with a cost fitted to the real fund, so every test
+reaches back to 2000. That covers the dot-com crash and 2008, while the Composer rules were
+fitted on 2012 onward.
+
+```bash
+python lab.py compare                       # every strategy, every era, and one day late
+python lab.py jitter --strategy design-f    # results with every threshold nudged at random
+```
+
+| Per year / worst drop | 2012–26 (tuned) | 2000–12 (unseen) | Dot-com crash |
+|---|---|---|---|
+| Excellent Adventure 2027 | 142% / −46% | −20% / −100% | −89% / −100% |
+| QLD V1.1 | 71% / −37% | 45% / −82% | −14% / −82% |
+| TQQQ For The Long Term | 159% / −54% | 31% / −91% | −49% / −91% |
+| Holy Grail | 132% / −47% | 27% / −79% | −41% / −79% |
+| 9 Sig | 40% / −77% | −15% / −99% | −79% / −98% |
+| `design-f` | 46% / −25% | 44% / −47% | 36% / −47% |
+| `diversified` | 18% / −14% | 14% / −27% | 11% / −27% |
+| Hold TQQQ | 39% / −82% | −36% / −100% | −95% / −100% |
+
+VXX before 2018 is modelled from the VIX index, which is the roughest input. It only affects
+Excellent Adventure.
