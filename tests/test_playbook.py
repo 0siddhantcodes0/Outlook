@@ -141,3 +141,75 @@ def test_load_refetches_tickers_a_batch_dropped(monkeypatch):
     P = pb.load(["QQQ", "SOXL"])
     assert calls == [(["QQQ", "SOXL"], True), (["SOXL"], False)]
     assert P["SOXL"].notna().all() and list(P.columns).count("SOXL") == 1
+
+
+def qld_row(**kw):
+    x = {"spy": 100.0, "spy200": 90.0, "qld": 50.0, "qld20": 48.0, "QLD10": 50.0, "QQQ10": 50.0,
+         "SPY10": 50.0, "QLD12": 50.0, "SHY12": 50.0, "SSO12": 50.0, "QID9": 50.0, "QID10": 50.0, "BSV10": 50.0}
+    x.update(kw)
+    return x
+
+
+def test_qld_v11_rules_in_order():
+    assert pb.qld_v11_pick(qld_row())[0] == "QLD"                                   # uptrend
+    assert pb.qld_v11_pick(qld_row(QLD10=79.5))[0] == "TLT"                         # overheated
+    assert pb.qld_v11_pick(qld_row(QLD10=79.0))[0] == "QLD"                         # strict >
+    down = dict(spy=80.0)
+    assert pb.qld_v11_pick(qld_row(**down, QQQ10=29, QLD12=40, SHY12=45))[0] == "QLD"
+    assert pb.qld_v11_pick(qld_row(**down, QQQ10=29, QLD12=45, SHY12=45))[0] == "QLD"   # tie: first listed
+    assert pb.qld_v11_pick(qld_row(**down, QQQ10=29, QLD12=46, SHY12=45))[0] == "SHY"
+    assert pb.qld_v11_pick(qld_row(**down, SPY10=29, SSO12=60, SHY12=45))[0] == "SHY"
+    assert pb.qld_v11_pick(qld_row(**down, QID9=30))[0] == "QID"                    # QLD above 20-day
+    assert pb.qld_v11_pick(qld_row(**down))[0] == "QLD"
+    below = dict(spy=80.0, qld=40.0)
+    assert pb.qld_v11_pick(qld_row(**below, QID10=50, BSV10=50))[0] == "QID"
+    assert pb.qld_v11_pick(qld_row(**below, QID10=40, BSV10=50))[0] == "BSV"
+    assert pb.qld_v11_pick(qld_row(**down, QQQ10=29, QLD12=40, SHY12=45), qqq=28)[0] == "QLD"   # tunable
+
+
+def synthetic_closes(n=400, seed=2):
+    rng = np.random.default_rng(seed)
+    idx = pd.bdate_range("2024-01-01", periods=n)
+    q = 100 * np.exp(np.cumsum(rng.normal(0.0008, 0.012, n)))
+    s = 100 * np.exp(np.cumsum(rng.normal(0.0005, 0.009, n)))
+    P = pd.DataFrame({"QQQ": q, "SPY": s, "SHY": 80 + 0 * q, "BSV": 75 + 0 * q}, index=idx)
+    P["SHY"] *= np.exp(np.cumsum(rng.normal(0, 0.001, n))); P["BSV"] *= np.exp(np.cumsum(rng.normal(0, 0.001, n)))
+    r = P.pct_change().fillna(0)
+    for f, base, L in (("QLD", "QQQ", 2), ("QID", "QQQ", -2), ("SSO", "SPY", 2), ("TQQQ", "QQQ", 3)):
+        P[f] = 50 * (1 + L * r[base]).cumprod()
+    return P
+
+
+def test_design_f_plan_uses_tsx_funds_and_sums_to_one():
+    P = synthetic_closes()
+    rows = pb.plan_today(P, pb.PRESETS["design-f"])
+    hold = pb.target_holdings(rows)
+    assert np.isclose(sum(hold.values()), 1.0)
+    assert set(hold) <= {"QQU.TO", "QQD.TO", "SPXU.TO", "XTLH.TO", "CASH.TO", "TQQQ.TO"}
+    qrow = next(r for r in rows if r["key"] == "qld")
+    assert qrow["summary"] in pb.QLD_V11["funds"] and "SPY" in qrow["reason"]
+    t = pb.qld_v11_targets(P)
+    assert t.iloc[-1] == qrow["summary"]
+
+
+def test_preview_shares_engines_already_shown():
+    P = synthetic_closes()
+    lines = pb.preview_lines("design-f", pb.plan_today(P, pb.PRESETS["design-f"]), shown={"dip"})
+    assert lines[0].startswith("DESIGN F PREVIEW")
+    assert any("same signal as above" in ln for ln in lines) and lines[-1].strip().startswith("Would hold:")
+
+
+def test_engine_tickers_cover_signals_and_funds():
+    signals, funds = pb.engine_tickers(pb.PRESETS["design-f"])
+    assert set(pb.QLD_V11["signals"]) <= signals and "TQQQ" in signals
+    assert {"QQU.TO", "QQD.TO", "SPXU.TO", "XTLH.TO", "CASH.TO", "TQQQ.TO"} <= funds
+
+
+def test_qld_returns_charges_each_switch():
+    P = synthetic_closes(600).drop(columns=["QLD", "QID", "SSO", "TQQQ"])
+    P["TLT"] = 90 * np.exp(np.cumsum(np.random.default_rng(4).normal(0, 0.008, len(P))))
+    rf = pd.Series(0.0001, index=P.index)
+    free, paid = pb.qld_returns(P, rf, trade_cost=0), pb.qld_returns(P, rf, trade_cost=0.001)
+    assert len(free) == len(paid) > 300 and np.isfinite(free).all()
+    switches = ((1 + free) / (1 + paid) > 1 + 1e-12).sum()
+    assert np.isclose(((free - paid) > 1e-12).sum(), switches) and switches > 0
