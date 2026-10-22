@@ -1,0 +1,19 @@
+{
+  "name": "snap-calories",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Snap a photo of your food, get a calorie estimate from Gemini, and log it to your daily total.",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "setup": "npm install && npm install --prefix server && npm install --prefix client",
+    "dev": "concurrently -k -n server,client -c blue,magenta \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
+    "build": "npm run build --prefix client",
+    "start": "npm start --prefix server",
+    "test": "npm test --prefix server"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.6"
+  }
+}
