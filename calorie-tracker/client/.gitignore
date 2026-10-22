@@ -1,0 +1,2 @@
+# The enclosing repository ignores *.png, but the app icons must be committed.
+!public/*.png

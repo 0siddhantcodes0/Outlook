@@ -1,0 +1,26 @@
+{
+  "name": "snap-calories-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Express API for Snap Calories: scans food photos with Gemini and logs calories to SQLite.",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@google/genai": "^2.30.0",
+    "better-sqlite3": "^13.0.3",
+    "dotenv": "^18.0.8",
+    "express": "^5.3.0",
+    "multer": "^2.4.0"
+  },
+  "devDependencies": {
+    "supertest": "^7.3.1"
+  }
+}
